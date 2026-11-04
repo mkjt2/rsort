@@ -1,11 +1,22 @@
 //! The sort engine: records with precomputed keys, the comparator, and the
 //! sort, unique, merge and check operations built on it.
 
+pub mod key;
+pub mod value;
+
+use key::KeyDef;
 use std::cmp::Ordering;
+use value::Value;
 
 /// How lines are compared.
 #[derive(Debug, Clone, Default)]
 pub struct Sorter {
+    /// `-k` keys in priority order; empty means the whole line as text.
+    pub keys: Vec<KeyDef>,
+    /// `-t`: the field separator, or runs of blanks when `None`.
+    pub separator: Option<u8>,
+    /// Seed for `-R` hashes.
+    pub seed: u64,
     /// Reverse the whole-line last-resort comparison (global `-r`).
     pub reverse: bool,
     /// `-u`: drop lines whose keys equal the previous line's.
@@ -18,17 +29,48 @@ pub struct Sorter {
 #[derive(Debug, Clone)]
 pub struct Record {
     pub line: Vec<u8>,
+    values: Vec<Value>,
 }
 
 impl Sorter {
     /// Decorate a line with its sort keys.
     pub fn record(&self, line: Vec<u8>) -> Record {
-        Record { line }
+        let values = self
+            .keys
+            .iter()
+            .map(|k| {
+                let (begin, end) = k.range(&line, self.separator);
+                value::value(&line, begin, end, &k.order, self.seed)
+            })
+            .collect();
+        Record { line, values }
+    }
+
+    fn text(&self, a: &[u8], b: &[u8]) -> Ordering {
+        a.cmp(b)
     }
 
     /// Compare by keys only (what `-u` uses to decide equality).
     pub fn compare_keys(&self, a: &Record, b: &Record) -> Ordering {
-        let ord = a.line.cmp(&b.line);
+        if self.keys.is_empty() {
+            return self.last_resort(a, b);
+        }
+        let text = |x: &[u8], y: &[u8]| self.text(x, y);
+        for ((key, va), vb) in self.keys.iter().zip(&a.values).zip(&b.values) {
+            let ord = value::compare(va, &a.line, vb, &b.line, &text);
+            if ord != Ordering::Equal {
+                return if key.order.reverse {
+                    ord.reverse()
+                } else {
+                    ord
+                };
+            }
+        }
+        Ordering::Equal
+    }
+
+    fn last_resort(&self, a: &Record, b: &Record) -> Ordering {
+        let ord = self.text(&a.line, &b.line);
         if self.reverse { ord.reverse() } else { ord }
     }
 
@@ -38,8 +80,7 @@ impl Sorter {
         if ord != Ordering::Equal || self.stable || self.unique {
             return ord;
         }
-        let last = a.line.cmp(&b.line);
-        if self.reverse { last.reverse() } else { last }
+        self.last_resort(a, b)
     }
 
     /// Sort in place (stable), then apply `-u`.

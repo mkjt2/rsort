@@ -82,7 +82,7 @@ pub struct Cli {
     #[arg(long, value_name = "FILE")]
     pub random_source: Option<std::path::PathBuf>,
 
-    #[arg(short, long, value_name = "POS1[,POS2]")]
+    #[arg(short, long, value_name = "POS1[,POS2]", allow_hyphen_values = true)]
     pub key: Vec<String>,
 
     #[arg(short = 't', long, value_name = "CHAR")]

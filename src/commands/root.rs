@@ -3,6 +3,7 @@
 use crate::cli::Cli;
 use crate::ctx::Ctx;
 use crate::error::AppError;
+use crate::sort::key::{KeyDef, Mode, Order};
 use crate::sort::{Record, Sorter};
 use std::path::{Path, PathBuf};
 
@@ -18,7 +19,7 @@ pub fn run(ctx: &mut Ctx, cli: &Cli) -> Result<(), AppError> {
             inputs.len()
         )));
     }
-    let sorter = sorter(cli);
+    let sorter = sorter(cli)?;
     let sep = if cli.zero_terminated { b'\0' } else { b'\n' };
 
     let mut per_input = Vec::with_capacity(inputs.len());
@@ -64,12 +65,105 @@ fn check_mode(cli: &Cli) -> Option<bool> {
     cli.check.as_deref().map(|mode| mode == "diagnose-first")
 }
 
-fn sorter(cli: &Cli) -> Sorter {
-    Sorter {
+fn sorter(cli: &Cli) -> Result<Sorter, AppError> {
+    let global = global_order(cli)?;
+    let blanks = cli.ignore_leading_blanks;
+    let keys = if cli.key.is_empty() {
+        vec![KeyDef::whole_line(global, blanks)]
+    } else {
+        cli.key
+            .iter()
+            .map(|k| {
+                KeyDef::parse(k, global, blanks)
+                    .map_err(|e| AppError::Usage(format!("-k {k}: {e}")))
+            })
+            .collect::<Result<_, _>>()?
+    };
+    Ok(Sorter {
+        keys,
+        separator: separator(cli.field_separator.as_deref())?,
+        seed: seed(cli.random_source.as_deref())?,
         reverse: cli.reverse,
         unique: cli.unique,
         stable: cli.stable || cli.unique,
+    })
+}
+
+/// The ordering flags that apply to keys without option letters.
+fn global_order(cli: &Cli) -> Result<Order, AppError> {
+    let mut order = Order {
+        reverse: cli.reverse,
+        fold: cli.ignore_case,
+        dictionary: cli.dictionary_order,
+        nonprinting: cli.ignore_nonprinting,
+        ..Order::default()
+    };
+    // clap rejects two different mode flags; --sort is checked here.
+    for (on, mode) in [
+        (cli.numeric_sort, Mode::Numeric),
+        (cli.general_numeric_sort, Mode::General),
+        (cli.human_numeric_sort, Mode::Human),
+        (cli.month_sort, Mode::Month),
+        (cli.random_sort, Mode::Random),
+        (cli.version_sort, Mode::Version),
+    ] {
+        if on {
+            order.set_mode(mode).map_err(AppError::Usage)?;
+        }
     }
+    if let Some(name) = cli.sort.as_deref() {
+        let mode = match name {
+            "general-numeric" => Mode::General,
+            "human-numeric" => Mode::Human,
+            "month" => Mode::Month,
+            "random" => Mode::Random,
+            _ => Mode::Numeric,
+        };
+        let current = order.mode;
+        order.set_mode(mode).map_err(|_| {
+            AppError::Usage(format!(
+                "--sort={name} cannot be used with -{}",
+                current.letter()
+            ))
+        })?;
+    }
+    Ok(order)
+}
+
+/// `-t CHAR`: one byte, or the escapes `\0` (NUL) and `\t` (tab).
+fn separator(arg: Option<&str>) -> Result<Option<u8>, AppError> {
+    let Some(s) = arg else {
+        return Ok(None);
+    };
+    match s.as_bytes() {
+        [b] => Ok(Some(*b)),
+        b"\\0" => Ok(Some(b'\0')),
+        b"\\t" => Ok(Some(b'\t')),
+        _ => {
+            let flag = if s.is_empty() {
+                "-t".to_string()
+            } else {
+                format!("-t {s}")
+            };
+            Err(AppError::Usage(format!(
+                "{flag}: the field separator must be one character"
+            )))
+        }
+    }
+}
+
+/// The `-R` hash seed: from `--random-source` contents, or random.
+fn seed(source: Option<&Path>) -> Result<u64, AppError> {
+    use std::hash::{BuildHasher, Hasher};
+    let Some(path) = source else {
+        return Ok(std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish());
+    };
+    let data = std::fs::read(path).map_err(|e| io_error(path, &e))?;
+    let mut h = std::hash::DefaultHasher::new();
+    h.write(&data);
+    Ok(h.finish())
 }
 
 /// The inputs to read: `--files0-from` names, the FILE operands, or stdin.
