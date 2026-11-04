@@ -13,6 +13,116 @@ use clap::{ArgAction, Args, CommandFactory, Parser, ValueEnum};
 pub struct Cli {
     #[command(flatten)]
     pub global: GlobalArgs,
+
+    #[arg(value_name = "FILE")]
+    pub files: Vec<std::path::PathBuf>,
+
+    #[arg(
+        short,
+        long,
+        value_name = "MODE",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "diagnose-first",
+        value_parser = ["diagnose-first", "silent", "quiet"]
+    )]
+    pub check: Option<String>,
+
+    #[arg(short = 'C', long, conflicts_with = "check")]
+    pub check_silent: bool,
+
+    #[arg(short, long)]
+    pub merge: bool,
+
+    #[arg(short, long, value_name = "FILE")]
+    pub output: Option<std::path::PathBuf>,
+
+    #[arg(short, long)]
+    pub unique: bool,
+
+    #[arg(short, long)]
+    pub stable: bool,
+
+    #[arg(short = 'b', long)]
+    pub ignore_leading_blanks: bool,
+
+    #[arg(short, long)]
+    pub dictionary_order: bool,
+
+    #[arg(short = 'f', long)]
+    pub ignore_case: bool,
+
+    #[arg(short = 'i', long)]
+    pub ignore_nonprinting: bool,
+
+    #[arg(short = 'g', long, conflicts_with_all = ["numeric_sort", "human_numeric_sort", "month_sort", "random_sort", "version_sort"])]
+    pub general_numeric_sort: bool,
+
+    #[arg(short = 'h', long, conflicts_with_all = ["numeric_sort", "general_numeric_sort", "month_sort", "random_sort", "version_sort"])]
+    pub human_numeric_sort: bool,
+
+    #[arg(short = 'M', long, conflicts_with_all = ["numeric_sort", "general_numeric_sort", "human_numeric_sort", "random_sort", "version_sort"])]
+    pub month_sort: bool,
+
+    #[arg(short, long, conflicts_with_all = ["general_numeric_sort", "human_numeric_sort", "month_sort", "random_sort", "version_sort"])]
+    pub numeric_sort: bool,
+
+    #[arg(short = 'R', long, conflicts_with_all = ["numeric_sort", "general_numeric_sort", "human_numeric_sort", "month_sort", "version_sort"])]
+    pub random_sort: bool,
+
+    #[arg(short = 'V', long, conflicts_with_all = ["numeric_sort", "general_numeric_sort", "human_numeric_sort", "month_sort", "random_sort"])]
+    pub version_sort: bool,
+
+    #[arg(long, value_name = "TYPE", value_parser = ["general-numeric", "human-numeric", "month", "numeric", "random"])]
+    pub sort: Option<String>,
+
+    #[arg(short, long)]
+    pub reverse: bool,
+
+    #[arg(long, value_name = "FILE")]
+    pub random_source: Option<std::path::PathBuf>,
+
+    #[arg(short, long, value_name = "POS1[,POS2]")]
+    pub key: Vec<String>,
+
+    #[arg(short = 't', long, value_name = "CHAR")]
+    pub field_separator: Option<String>,
+
+    #[arg(short, long)]
+    pub zero_terminated: bool,
+
+    #[arg(long, value_name = "FILE")]
+    pub files0_from: Option<std::path::PathBuf>,
+
+    #[arg(short = 'S', long, value_name = "SIZE")]
+    pub buffer_size: Option<String>,
+
+    #[arg(short = 'T', long, value_name = "DIR")]
+    pub temporary_directory: Option<std::path::PathBuf>,
+
+    #[arg(long, value_name = "N")]
+    pub parallel: Option<String>,
+
+    #[arg(long, value_name = "N")]
+    pub batch_size: Option<String>,
+
+    #[arg(long, value_name = "PROGRAM")]
+    pub compress_program: Option<String>,
+
+    #[arg(long)]
+    pub radixsort: bool,
+
+    #[arg(long)]
+    pub mergesort: bool,
+
+    #[arg(long)]
+    pub qsort: bool,
+
+    #[arg(long)]
+    pub heapsort: bool,
+
+    #[arg(long)]
+    pub mmap: bool,
 }
 
 #[derive(Debug, Args)]

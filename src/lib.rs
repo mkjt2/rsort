@@ -6,6 +6,7 @@ pub mod commands;
 pub mod ctx;
 pub mod error;
 pub mod logging;
+pub mod sort;
 pub mod spec;
 
 use clap::FromArgMatches;

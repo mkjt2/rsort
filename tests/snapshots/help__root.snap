@@ -1,0 +1,151 @@
+---
+source: tests/help.rs
+expression: "String::from_utf8(output.stdout).unwrap()"
+---
+Sort, merge or check lines of text files and standard input, a Rust clone of the macOS sort(1) (BSD
+sort 2.3-Apple).
+
+Lines are compared using the locale's collation (byte order when LC_ALL=C, and always on Linux
+builds) unless ordering flags say otherwise. With -k, comparisons use the given key fields in order,
+falling back to the whole line when all keys compare equal (unless -s or -u). Global ordering flags
+apply to every -k key that has no option letters of its own.
+
+A FILE of - means standard input. With no FILE, read standard input.
+
+Usage: rsort [OPTIONS] [FILE]...
+
+Arguments:
+  [FILE]...
+          Files to sort, merge or check; - or none means stdin
+
+Options:
+  -c, --check[=<MODE>]
+          Check that the single input (one FILE or stdin) is sorted; report the first disorder and
+          exit 1 if not. MODE silent or quiet reports nothing
+          
+          [possible values: diagnose-first, silent, quiet]
+
+  -C, --check-silent
+          Like -c, but report nothing; only the exit code says whether the input is sorted
+
+  -m, --merge
+          Merge already-sorted files without sorting them; unsorted input gives undefined order
+
+  -o, --output <FILE>
+          Write the result to FILE instead of stdout; FILE may also be an input
+
+  -u, --unique
+          Output only the first of each run of lines with equal keys; implies -s. With -c, also fail
+          on duplicates
+
+  -s, --stable
+          Keep lines with equal keys in input order (disables the whole-line last-resort comparison)
+
+  -b, --ignore-leading-blanks
+          Ignore leading blanks when finding key start and end positions
+
+  -d, --dictionary-order
+          Compare only blanks and alphanumeric characters
+
+  -f, --ignore-case
+          Fold lowercase to uppercase before comparing
+
+  -i, --ignore-nonprinting
+          Ignore non-printable characters
+
+  -g, --general-numeric-sort
+          Compare as floating-point numbers (accepts exponents, inf, nan)
+
+  -h, --human-numeric-sort
+          Compare numbers with SI suffixes, e.g. 2K < 1M
+
+  -M, --month-sort
+          Compare as month abbreviations (JAN < ... < DEC); unknown strings sort first
+
+  -n, --numeric-sort
+          Compare by arithmetic value: optional blanks, minus sign, digits and a decimal point
+
+  -R, --random-sort
+          Shuffle, keeping lines with equal keys together
+
+  -V, --version-sort
+          Compare version numbers within text, e.g. file-1.9 < file-1.10
+
+      --sort <TYPE>
+          Sort by TYPE; the same as -g, -h, -M, -n or -R
+          
+          [possible values: general-numeric, human-numeric, month, numeric, random]
+
+  -r, --reverse
+          Reverse the result of comparisons
+
+      --random-source <FILE>
+          Seed -R from FILE's contents, so equal seeds give equal output [default: random]
+
+  -k, --key <POS1[,POS2]>
+          Sort by a key from POS1 to POS2 (default end of line). POS is F[.C][OPTS], with OPTS from
+          bdfghiMnRrV. Repeat for tie-breakers
+
+  -t, --field-separator <CHAR>
+          Separate fields with CHAR (\0 for NUL) instead of runs of blanks; each CHAR delimits a
+          field
+
+  -z, --zero-terminated
+          End lines with NUL instead of newline, on input and output
+
+      --files0-from <FILE>
+          Read NUL-separated input file names from FILE (- for stdin) instead of operands
+
+  -S, --buffer-size <SIZE>
+          Ignored; accepted for compatibility (rsort sorts in memory)
+
+  -T, --temporary-directory <DIR>
+          Ignored; accepted for compatibility (rsort uses no temporary files)
+
+      --parallel <N>
+          Ignored; accepted for compatibility
+
+      --batch-size <N>
+          Ignored; accepted for compatibility
+
+      --compress-program <PROGRAM>
+          Ignored; accepted for compatibility
+
+      --radixsort
+          Ignored; accepted for compatibility
+
+      --mergesort
+          Ignored; accepted for compatibility
+
+      --qsort
+          Ignored; accepted for compatibility
+
+      --heapsort
+          Ignored; accepted for compatibility
+
+      --mmap
+          Ignored; accepted for compatibility
+
+      --help
+          Print help
+
+      --version
+          Print version
+
+Examples:
+  # Sort a file by byte value
+  $ LC_ALL=C rsort names.txt
+  # Largest human-readable sizes first
+  $ du -sh * | rsort -hr
+  # Sort by the third colon-separated field, numerically
+  $ rsort -t: -k3,3n /etc/passwd
+  # Deduplicate a file in place
+  $ rsort -u -o words.txt words.txt
+  # Check order silently via the exit code
+  $ rsort -C data.txt && echo sorted
+
+Exit codes:
+    0  Success
+    1  The input is not sorted (-c/-C), or has duplicate keys with -u
+    2  Invalid usage, or a file could not be read or written
+  130  Interrupted (Ctrl-C)

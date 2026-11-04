@@ -11,13 +11,17 @@ use serde::Serialize;
 
 /// Exit codes used by [`AppError`], by name. Must match `cli.toml`
 /// (checked by `tests/conformance.rs`). `error` must equal `[cli].error_exit_code`.
-pub const EXIT_CODES: &[(&str, i32)] = &[("error", 1), ("usage", 2)];
+pub const EXIT_CODES: &[(&str, i32)] = &[("error", 2), ("usage", 2), ("disorder", 1)];
 
 #[derive(Debug, thiserror::Error, Diagnostic)]
 pub enum AppError {
     #[error("{0}")]
     #[diagnostic(code(usage))]
     Usage(String),
+
+    #[error("{0}")]
+    #[diagnostic(code(disorder))]
+    Disorder(String),
 
     #[error("I/O error: {0}")]
     #[diagnostic(code(error))]
@@ -33,6 +37,7 @@ impl AppError {
     pub fn code(&self) -> &'static str {
         match self {
             AppError::Usage(_) => "usage",
+            AppError::Disorder(_) => "disorder",
             AppError::Io(_) | AppError::Other(_) => "error",
         }
     }
@@ -119,6 +124,7 @@ mod tests {
     fn every_code_has_an_exit_code() {
         let errors = [
             AppError::Usage("u".into()),
+            AppError::Disorder("d".into()),
             AppError::Io(std::io::Error::other("io")),
             AppError::Other("o".into()),
         ];

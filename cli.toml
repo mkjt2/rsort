@@ -17,8 +17,8 @@ macOS sort(1) (BSD sort 2.3-Apple).
 Lines are compared using the locale's collation (byte order when LC_ALL=C, and \
 always on Linux builds) unless ordering flags say otherwise. With -k, \
 comparisons use the given key fields in order, falling back to the whole line \
-when all keys compare equal (unless -s or -u). Ordering flags given before any \
--k apply to every key that has no ordering letters of its own.
+when all keys compare equal (unless -s or -u). Global ordering flags apply to \
+every -k key that has no option letters of its own.
 
 A FILE of - means standard input. With no FILE, read standard input."""
 examples = [
