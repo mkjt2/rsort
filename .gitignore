@@ -1,0 +1,5 @@
+/target
+/dist
+*.snap.new
+*.pending-snap
+lcov.info

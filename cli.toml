@@ -1,0 +1,669 @@
+# cli.toml: the source of truth for this CLI's interface.
+#
+# All user-facing text (about, help, examples) lives here and is applied to the
+# clap definitions at runtime. A conformance test (tests/conformance.rs) fails
+# if src/cli.rs and this file disagree on structure.
+#
+# Schema reference: the cli-maker plugin, skills/design/references/cli-toml.md
+schema_version = 1
+
+[cli]
+name = "rsort"
+about = "Sort, merge or check lines of text files"
+long_about = """
+Sort, merge or check lines of text files and standard input, a Rust clone of the \
+macOS sort(1) (BSD sort 2.3-Apple).
+
+Lines are compared using the locale's collation (byte order when LC_ALL=C, and \
+always on Linux builds) unless ordering flags say otherwise. With -k, \
+comparisons use the given key fields in order, falling back to the whole line \
+when all keys compare equal (unless -s or -u). Ordering flags given before any \
+-k apply to every key that has no ordering letters of its own.
+
+A FILE of - means standard input. With no FILE, read standard input."""
+examples = [
+  { cmd = "LC_ALL=C rsort names.txt", description = "Sort a file by byte value" },
+  { cmd = "du -sh * | rsort -hr", description = "Largest human-readable sizes first" },
+  { cmd = "rsort -t: -k3,3n /etc/passwd", description = "Sort by the third colon-separated field, numerically" },
+  { cmd = "rsort -u -o words.txt words.txt", description = "Deduplicate a file in place" },
+  { cmd = "rsort -C data.txt && echo sorted", description = "Check order silently via the exit code" },
+]
+help_flags = ["--help"]
+version_flags = ["--version"]
+error_style = "plain"
+error_exit_code = 2
+notes = """
+Goal: a drop-in clone of macOS /usr/bin/sort for scripts and humans. Its observable \
+behavior is the spec, captured as [[case]]s recorded from /usr/bin/sort with LC_ALL=C.
+
+Overrides of cli-maker defaults, all because the interface must match the original:
+- Single command with FILE operands (no subcommands), like sort.
+- help_flags = ["--help"] and version_flags = ["--version"]: sort uses -h for \
+human-numeric sort and -V for version sort.
+- error_style = plain: sort prints `sort: <message>`; ours prints `rsort: <message>`.
+- Exit codes: 1 means "not sorted" (-c/-C), errors and usage errors exit 2, as in sort.
+- Kit json/color/prompts/verbosity removed: the output is the data and sort has no \
+-v/-q/--json. sort's --debug is not implemented.
+
+Deliberate deviations from the original:
+- Conflicting ordering flags (e.g. -n -g) exit 2 as a usage error; sort exits 1, \
+which would be indistinguishable from "not sorted".
+- File errors name the file (`rsort: nope.txt: No such file or directory`); sort \
+omits the name.
+- --version prints rsort's own version, not 2.3-Apple.
+- -C also has a long form, --check-silent (cli-maker requires a long name).
+
+Out of scope (rejected as usage errors):
+- Legacy +POS1 [-POS2] keys: an argument starting with + is a FILE operand.
+- --debug.
+
+Accepted and ignored for script compatibility (in-memory sort, no tuning knobs): \
+-S/--buffer-size, -T/--temporary-directory, --parallel, --batch-size, \
+--compress-program, --radixsort, --mergesort, --qsort, --heapsort, --mmap.
+
+- -c/-C with more than one FILE is a usage error (exit 2); sort silently exits 0.
+
+Collation: follow the locale like sort. When LC_ALL / LC_COLLATE / LANG select a \
+non-C locale, compare text keys with libc strcoll (lines containing NUL fall back to \
+byte order for the bytes after it); otherwise compare bytes. On the static musl Linux \
+builds strcoll is byte order, so Linux output is always byte order (documented in the \
+README). Numeric, month, version and random comparisons are locale-independent \
+(C rules), as in sort's C-locale behavior for -V. Cases pin LC_ALL=C; the build adds a \
+macOS-only test (cfg(target_os = "macos")) that compares `rsort` and `/usr/bin/sort` \
+under LC_ALL=en_US.UTF-8 on mixed-case and punctuation input, because [[case]]s \
+cannot be platform-conditional.
+
+Name: rsort (no collision; does not shadow /usr/bin/sort). No Homebrew tap."""
+
+[project]
+targets = [
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-musl",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+]
+# homebrew_tap = "mkjt2/homebrew-tap" # set to publish a Homebrew formula on release
+
+[kit]
+config = false      # --config, config file, `config show/path`, exit code 3
+self_update = false # `self-update` from GitHub Releases, exit codes 5-6
+json = false        # global --json and JSON errors on stderr
+color = false       # --color (automatic color and NO_COLOR work without it)
+prompts = false     # confirmation prompts, --no-input, exit code 4
+verbosity = false   # -v/-q (logging and RUST_LOG work without it)
+
+# Exit codes 0 (ok), 2 (usage) and 130 (interrupted) are built in; 1 is redefined.
+
+[[exit_code]]
+code = 1
+name = "disorder"
+description = "The input is not sorted (-c/-C), or has duplicate keys with -u"
+
+[[exit_code]]
+code = 2
+name = "error"
+description = "Invalid usage, or a file could not be read or written"
+
+[[env]]
+name = "LC_ALL"
+description = "Locale for collation; overrides LC_COLLATE and LANG. Set to C for byte order"
+
+[[env]]
+name = "LC_COLLATE"
+description = "Locale for collation when LC_ALL is unset"
+
+[[env]]
+name = "LANG"
+description = "Fallback locale when LC_ALL and LC_COLLATE are unset"
+
+[[env]]
+name = "RUST_LOG"
+description = "Override log filtering (e.g. debug, rsort=trace)"
+
+# ---------------------------------------------------------------------------
+# Root flags: sort's options.
+# ---------------------------------------------------------------------------
+
+# --- Modes ---
+
+[[flag]]
+id = "check"
+long = "check"
+short = "c"
+kind = "value"
+value_name = "MODE"
+default_missing = "diagnose-first"
+possible_values = ["diagnose-first", "silent", "quiet"]
+help = "Check that the single input (one FILE or stdin) is sorted; report the first disorder and exit 1 if not. MODE silent or quiet reports nothing"
+
+[[flag]]
+id = "check_silent"
+long = "check-silent"
+short = "C"
+kind = "switch"
+conflicts_with = ["check"]
+help = "Like -c, but report nothing; only the exit code says whether the input is sorted"
+
+[[flag]]
+id = "merge"
+long = "merge"
+short = "m"
+kind = "switch"
+help = "Merge already-sorted files without sorting them; unsorted input gives undefined order"
+
+[[flag]]
+id = "output"
+long = "output"
+short = "o"
+kind = "value"
+value_name = "FILE"
+help = "Write the result to FILE instead of stdout; FILE may also be an input"
+
+[[flag]]
+id = "unique"
+long = "unique"
+short = "u"
+kind = "switch"
+help = "Output only the first of each run of lines with equal keys; implies -s. With -c, also fail on duplicates"
+
+[[flag]]
+id = "stable"
+long = "stable"
+short = "s"
+kind = "switch"
+help = "Keep lines with equal keys in input order (disables the whole-line last-resort comparison)"
+
+# --- Ordering (global, or per key as letters in -k) ---
+
+[[flag]]
+id = "ignore_leading_blanks"
+long = "ignore-leading-blanks"
+short = "b"
+kind = "switch"
+help = "Ignore leading blanks when finding key start and end positions"
+
+[[flag]]
+id = "dictionary_order"
+long = "dictionary-order"
+short = "d"
+kind = "switch"
+help = "Compare only blanks and alphanumeric characters"
+
+[[flag]]
+id = "ignore_case"
+long = "ignore-case"
+short = "f"
+kind = "switch"
+help = "Fold lowercase to uppercase before comparing"
+
+[[flag]]
+id = "ignore_nonprinting"
+long = "ignore-nonprinting"
+short = "i"
+kind = "switch"
+help = "Ignore non-printable characters"
+
+[[flag]]
+id = "general_numeric_sort"
+long = "general-numeric-sort"
+short = "g"
+kind = "switch"
+conflicts_with = ["numeric_sort", "human_numeric_sort", "month_sort", "random_sort", "version_sort"]
+help = "Compare as floating-point numbers (accepts exponents, inf, nan)"
+
+[[flag]]
+id = "human_numeric_sort"
+long = "human-numeric-sort"
+short = "h"
+kind = "switch"
+conflicts_with = ["numeric_sort", "general_numeric_sort", "month_sort", "random_sort", "version_sort"]
+help = "Compare numbers with SI suffixes, e.g. 2K < 1M"
+
+[[flag]]
+id = "month_sort"
+long = "month-sort"
+short = "M"
+kind = "switch"
+conflicts_with = ["numeric_sort", "general_numeric_sort", "human_numeric_sort", "random_sort", "version_sort"]
+help = "Compare as month abbreviations (JAN < ... < DEC); unknown strings sort first"
+
+[[flag]]
+id = "numeric_sort"
+long = "numeric-sort"
+short = "n"
+kind = "switch"
+conflicts_with = ["general_numeric_sort", "human_numeric_sort", "month_sort", "random_sort", "version_sort"]
+help = "Compare by arithmetic value: optional blanks, minus sign, digits and a decimal point"
+
+[[flag]]
+id = "random_sort"
+long = "random-sort"
+short = "R"
+kind = "switch"
+conflicts_with = ["numeric_sort", "general_numeric_sort", "human_numeric_sort", "month_sort", "version_sort"]
+help = "Shuffle, keeping lines with equal keys together"
+
+[[flag]]
+id = "version_sort"
+long = "version-sort"
+short = "V"
+kind = "switch"
+conflicts_with = ["numeric_sort", "general_numeric_sort", "human_numeric_sort", "month_sort", "random_sort"]
+help = "Compare version numbers within text, e.g. file-1.9 < file-1.10"
+
+[[flag]]
+id = "sort"
+long = "sort"
+kind = "value"
+value_name = "TYPE"
+possible_values = ["general-numeric", "human-numeric", "month", "numeric", "random"]
+help = "Sort by TYPE; the same as -g, -h, -M, -n or -R"
+
+[[flag]]
+id = "reverse"
+long = "reverse"
+short = "r"
+kind = "switch"
+help = "Reverse the result of comparisons"
+
+[[flag]]
+id = "random_source"
+long = "random-source"
+kind = "value"
+value_name = "FILE"
+help = "Seed -R from FILE's contents, so equal seeds give equal output [default: random]"
+
+# --- Keys and fields ---
+
+[[flag]]
+id = "key"
+long = "key"
+short = "k"
+kind = "values"
+value_name = "POS1[,POS2]"
+help = "Sort by a key from POS1 to POS2 (default end of line). POS is F[.C][OPTS], with OPTS from bdfghiMnRrV. Repeat for tie-breakers"
+
+[[flag]]
+id = "field_separator"
+long = "field-separator"
+short = "t"
+kind = "value"
+value_name = "CHAR"
+help = "Separate fields with CHAR (\\0 for NUL) instead of runs of blanks; each CHAR delimits a field"
+
+[[flag]]
+id = "zero_terminated"
+long = "zero-terminated"
+short = "z"
+kind = "switch"
+help = "End lines with NUL instead of newline, on input and output"
+
+# --- Input ---
+
+[[flag]]
+id = "files0_from"
+long = "files0-from"
+kind = "value"
+value_name = "FILE"
+help = "Read NUL-separated input file names from FILE (- for stdin) instead of operands"
+
+# --- Accepted for compatibility, ignored ---
+
+[[flag]]
+id = "buffer_size"
+long = "buffer-size"
+short = "S"
+kind = "value"
+value_name = "SIZE"
+help = "Ignored; accepted for compatibility (rsort sorts in memory)"
+
+[[flag]]
+id = "temporary_directory"
+long = "temporary-directory"
+short = "T"
+kind = "value"
+value_name = "DIR"
+help = "Ignored; accepted for compatibility (rsort uses no temporary files)"
+
+[[flag]]
+id = "parallel"
+long = "parallel"
+kind = "value"
+value_name = "N"
+help = "Ignored; accepted for compatibility"
+
+[[flag]]
+id = "batch_size"
+long = "batch-size"
+kind = "value"
+value_name = "N"
+help = "Ignored; accepted for compatibility"
+
+[[flag]]
+id = "compress_program"
+long = "compress-program"
+kind = "value"
+value_name = "PROGRAM"
+help = "Ignored; accepted for compatibility"
+
+[[flag]]
+id = "radixsort"
+long = "radixsort"
+kind = "switch"
+help = "Ignored; accepted for compatibility"
+
+[[flag]]
+id = "mergesort"
+long = "mergesort"
+kind = "switch"
+help = "Ignored; accepted for compatibility"
+
+[[flag]]
+id = "qsort"
+long = "qsort"
+kind = "switch"
+help = "Ignored; accepted for compatibility"
+
+[[flag]]
+id = "heapsort"
+long = "heapsort"
+kind = "switch"
+help = "Ignored; accepted for compatibility"
+
+[[flag]]
+id = "mmap"
+long = "mmap"
+kind = "switch"
+help = "Ignored; accepted for compatibility"
+
+# ---------------------------------------------------------------------------
+# Root operands: a single-command CLI.
+# ---------------------------------------------------------------------------
+
+[[arg]]
+id = "files"
+value_name = "FILE"
+multiple = true
+help = "Files to sort, merge or check; - or none means stdin"
+
+# ---------------------------------------------------------------------------
+# Behavior cases: executable examples, run by tests/cases.rs. Expected output
+# is inline (`stdout`) or in tests/cases/<stdout_file>. Expectations are
+# recorded from /usr/bin/sort (record_cases.py) unless a note says otherwise.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "default-byte-order"
+stdin = "banana\nApple\napple\n_x\nBanana\n10\n9\n"
+env = { LC_ALL = "C" }
+stdout = "10\n9\nApple\nBanana\n_x\napple\nbanana\n"
+exit_code = 0
+
+[[case]]
+name = "missing-final-newline"
+stdin = "b\na"
+env = { LC_ALL = "C" }
+notes = "A last line without a newline is still a line; output always ends with one."
+stdout = "a\nb\n"
+exit_code = 0
+
+[[case]]
+name = "files-and-stdin"
+args = ["b.txt", "-", "a.txt"]
+stdin = "m\n"
+files = { "a.txt" = "z\na\n", "b.txt" = "c\n" }
+env = { LC_ALL = "C" }
+stdout = "a\nc\nm\nz\n"
+exit_code = 0
+
+[[case]]
+name = "reverse"
+args = ["-r"]
+stdin = "a\nc\nb\n"
+env = { LC_ALL = "C" }
+stdout = "c\nb\na\n"
+exit_code = 0
+
+[[case]]
+name = "numeric"
+args = ["-n"]
+stdin = "10\n9\n-3\n  2\n1.5\nabc\n0\n-0.5\n"
+env = { LC_ALL = "C" }
+stdout = "-3\n-0.5\n0\nabc\n1.5\n  2\n9\n10\n"
+exit_code = 0
+
+[[case]]
+name = "numeric-reverse-clustered"
+args = ["-nr"]
+stdin = "10\n9\n100\n"
+env = { LC_ALL = "C" }
+stdout = "100\n10\n9\n"
+exit_code = 0
+
+[[case]]
+name = "general-numeric"
+args = ["-g"]
+stdin = "1e3\n2.5\n-inf\nnan\n10\nabc\n"
+env = { LC_ALL = "C" }
+stdout = "abc\nnan\n-inf\n2.5\n10\n1e3\n"
+exit_code = 0
+
+[[case]]
+name = "human-numeric"
+args = ["-h"]
+stdin = "1M\n12345K\n2G\n512\n-1K\n0\n"
+env = { LC_ALL = "C" }
+stdout = "-1K\n0\n512\n12345K\n1M\n2G\n"
+exit_code = 0
+
+[[case]]
+name = "month"
+args = ["-M"]
+stdin = "Mar\nfoo\n jan\nDEC\nfeb\n"
+env = { LC_ALL = "C" }
+stdout = "foo\n jan\nfeb\nMar\nDEC\n"
+exit_code = 0
+
+[[case]]
+name = "version"
+args = ["-V"]
+stdin = "sort-1.024.tgz\nsort-1.23.tgz\nsort-1.022.tgz\nsort-1.23.1.tgz\nsort-1.024.07.tgz\nsort-1.024.009.tgz\n"
+env = { LC_ALL = "C" }
+stdout = "sort-1.022.tgz\nsort-1.23.tgz\nsort-1.23.1.tgz\nsort-1.024.tgz\nsort-1.024.07.tgz\nsort-1.024.009.tgz\n"
+exit_code = 0
+
+[[case]]
+name = "ignore-case"
+args = ["-f"]
+stdin = "b\nB\na\nA\n"
+env = { LC_ALL = "C" }
+stdout = "A\na\nB\nb\n"
+exit_code = 0
+
+[[case]]
+name = "dictionary-order"
+args = ["-d"]
+stdin = "a-c\nab\n_b\n"
+env = { LC_ALL = "C" }
+stdout = "ab\na-c\n_b\n"
+exit_code = 0
+
+[[case]]
+name = "unique"
+args = ["-u"]
+stdin = "b\na\nb\na\nc\n"
+env = { LC_ALL = "C" }
+stdout = "a\nb\nc\n"
+exit_code = 0
+
+[[case]]
+name = "unique-ignore-case-keeps-first"
+args = ["-uf"]
+stdin = "b\nB\na\nA\n"
+env = { LC_ALL = "C" }
+stdout = "a\nb\n"
+exit_code = 0
+
+[[case]]
+name = "key-field-numeric"
+args = ["-t:", "-k3,3n"]
+stdin = "root:x:0\nbob:x:501\nnobody:x:-2\ndaemon:x:1\n"
+env = { LC_ALL = "C" }
+stdout = "nobody:x:-2\nroot:x:0\ndaemon:x:1\nbob:x:501\n"
+exit_code = 0
+
+[[case]]
+name = "multiple-keys"
+args = ["-k2,2", "-k1,1nr"]
+stdin = "3 b\n1 a\n2 b\n10 a\n"
+env = { LC_ALL = "C" }
+stdout = "10 a\n1 a\n3 b\n2 b\n"
+exit_code = 0
+
+[[case]]
+name = "key-char-offset-blanks"
+args = ["-k2.2b,2.3"]
+stdin = "x   zab\ny  yaa\nz qac\n"
+env = { LC_ALL = "C" }
+stdout = "x   zab\ny  yaa\nz qac\n"
+exit_code = 0
+notes = "The end position 2.3 has no b, so it counts the leading blanks: every key is empty and the whole-line last resort decides. Easy to get wrong."
+
+[[case]]
+name = "stable-vs-last-resort"
+args = ["-s", "-k1,1"]
+stdin = "a 2\nb 1\na 1\n"
+env = { LC_ALL = "C" }
+stdout = "a 2\na 1\nb 1\n"
+exit_code = 0
+
+[[case]]
+name = "zero-terminated"
+args = ["-z"]
+stdin = "b\u0000a\nx\u0000c\u0000"
+env = { LC_ALL = "C" }
+stdout = "a\nx\u0000b\u0000c\u0000"
+exit_code = 0
+
+[[case]]
+name = "merge"
+args = ["-m", "a.txt", "b.txt"]
+files = { "a.txt" = "a\nc\ne\n", "b.txt" = "b\nd\n" }
+env = { LC_ALL = "C" }
+stdout = "a\nb\nc\nd\ne\n"
+exit_code = 0
+
+[[case]]
+name = "output-in-place"
+args = ["-o", "in.txt", "in.txt"]
+files = { "in.txt" = "b\na\n" }
+env = { LC_ALL = "C" }
+notes = "Writes only to -o; the build checks in.txt holds a\\nb\\n afterwards (cases only compare stdout)."
+stdout = ""
+exit_code = 0
+
+[[case]]
+name = "random-same-seed-groups-equal"
+args = ["-R", "--random-source", "seed", "-f"]
+stdin = "a\nb\nA\nc\nB\n"
+files = { "seed" = "fixed seed\n" }
+env = { LC_ALL = "C" }
+exit_code = 0
+notes = "Not recorded, and stdout is unchecked here: the hash differs from sort's. The build adds a test that asserts that equal keys (a/A, b/B) are adjacent and that the same seed gives the same output twice."
+
+[[case]]
+name = "check-sorted"
+args = ["-c"]
+stdin = "a\nb\nb\n"
+env = { LC_ALL = "C" }
+stdout = ""
+exit_code = 0
+
+[[case]]
+name = "check-disorder"
+args = ["-c"]
+stdin = "a\nc\nb\n"
+env = { LC_ALL = "C" }
+stderr_contains = "-:3: disorder: b"
+stdout = ""
+exit_code = 1
+
+[[case]]
+name = "check-multiple-files"
+args = ["-c", "a.txt", "b.txt"]
+files = { "a.txt" = "a\n", "b.txt" = "b\n" }
+env = { LC_ALL = "C" }
+stdout = ""
+exit_code = 2
+stderr_contains = "one file"
+notes = "Not recorded: deliberate deviation. sort exits 0 without checking anything."
+
+[[case]]
+name = "check-silent"
+args = ["-C"]
+stdin = "b\na\n"
+env = { LC_ALL = "C" }
+stdout = ""
+exit_code = 1
+
+[[case]]
+name = "check-unique-duplicate"
+args = ["-cu"]
+stdin = "a\na\n"
+env = { LC_ALL = "C" }
+stderr_contains = "-:2: disorder: a"
+stdout = ""
+exit_code = 1
+
+[[case]]
+name = "ignored-compat-flags"
+args = ["-S", "1M", "-T", "/tmp", "--parallel=2", "--radixsort", "--mmap"]
+stdin = "b\na\n"
+env = { LC_ALL = "C" }
+stdout = "a\nb\n"
+exit_code = 0
+
+[[case]]
+name = "missing-file"
+args = ["nope.txt"]
+env = { LC_ALL = "C" }
+stderr_contains = "rsort: nope.txt: No such file or directory"
+notes = "Exit code recorded from sort; the message names the file (sort omits it)."
+stdout = ""
+exit_code = 2
+
+[[case]]
+name = "bad-key-zero-field"
+args = ["-k", "0"]
+stdin = "a\n"
+env = { LC_ALL = "C" }
+stderr_contains = "-k 0"
+stdout = ""
+exit_code = 2
+
+[[case]]
+name = "multi-char-separator"
+args = ["-t", "ab"]
+stdin = "a\n"
+env = { LC_ALL = "C" }
+stderr_contains = "ab"
+stdout = ""
+exit_code = 2
+
+[[case]]
+name = "conflicting-orderings"
+args = ["-n", "-g"]
+stdin = "1\n"
+env = { LC_ALL = "C" }
+stdout = ""
+exit_code = 2
+stderr_contains = "cannot be used with"
+notes = "Not recorded: deliberate deviation. sort exits 1 (\"mutually exclusive flags\"), which collides with the disorder code."
+
+[[case]]
+name = "unknown-flag"
+args = ["--definitely-not-a-flag"]
+stdout = ""
+exit_code = 2
+stderr_contains = "unexpected argument"
+notes = "Usage errors exit 2, as in sort."
