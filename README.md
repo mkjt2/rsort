@@ -14,15 +14,52 @@ From source: `cargo install --locked --git https://github.com/mkjt2/rsort`.
 
 ## Usage
 
+rsort is a drop-in clone of the macOS `sort` (BSD sort 2.3-Apple): same flags,
+same output, same exit codes (0 sorted, 1 not sorted with `-c`/`-C`, 2 error).
+
 ```sh
-rsort --help          # human help, with examples and exit codes
-rsort schema          # the full interface as JSON (for scripts and agents)
+rsort names.txt                      # sort lines
+du -sh * | rsort -hr                 # largest human-readable sizes first
+rsort -t: -k3,3n /etc/passwd         # third field, numerically
+rsort -u -o words.txt words.txt      # deduplicate in place
+rsort -C data.txt && echo sorted     # check order via the exit code
+rsort --help                         # every flag, with examples and exit codes
 ```
 
-Every command that produces data accepts `--json`. With `--json`, errors are
-written to stderr as `{"error": {"code", "exit_code", "message", "hint"}}`.
-Pass `--no-input` (or set `RSORT_NO_INPUT=1`) to guarantee the tool never
-prompts.
+`-h` and `-V` are sort's human-numeric and version sort, so help and version
+are `--help` and `--version` only. `rsort --generate man|schema|complete-<shell>`
+prints a man page, the interface as JSON, or shell completions.
+
+### Locale
+
+Like sort, rsort follows `LC_ALL`, then `LC_COLLATE`, then `LANG`. In a non-C
+locale, text compares with the locale's collation (`strcoll`), `-d`/`-i`/`-f`
+and `-k` character offsets work by character in UTF-8, and `-n`/`-h`/`-g` use
+the locale's decimal point and thousands separator (`1,000` = 1000 in en_US).
+Set `LC_ALL=C` for byte order.
+
+On Linux the release binaries are static musl builds, whose C library has no
+collation: text always compares in byte order there, and numbers use C rules.
+
+### Differences from macOS sort
+
+- Errors name the file: `rsort: nope.txt: No such file or directory`.
+- Conflicting options are usage errors with exit code 2: two ordering modes
+  (`-n -g`), `-c` with `-m`, `-c` with more than one file, and
+  `--files0-from` with FILE operands. sort exits 1 or ignores them.
+- `--files0-from -` reads the file list from stdin.
+- Invalid UTF-8 in a UTF-8 locale compares by bytes; sort fails with
+  "Illegal byte sequence".
+- Month names (`-M`) are always the English abbreviations JAN to DEC.
+- `-R` uses a different hash, so a given `--random-source` gives a different
+  (but repeatable) order than sort's.
+- A thousands separator before any digit and followed by a zero (`,05` in
+  en_US) does not reproduce sort's ordering.
+- `-S`, `-T`, `--parallel`, `--batch-size`, `--compress-program`,
+  `--radixsort`, `--mergesort`, `--qsort`, `--heapsort` and `--mmap` are
+  accepted and ignored: rsort sorts in memory.
+- Not supported: the obsolete `+POS1 -POS2` keys (an argument starting with
+  `+` is a file name) and `--debug`.
 
 ## Development
 
