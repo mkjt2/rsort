@@ -3,11 +3,12 @@
 use crate::cli::Cli;
 use crate::ctx::Ctx;
 use crate::error::AppError;
+use crate::sort::collate::Locale;
 use crate::sort::key::{KeyDef, Mode, Order};
 use crate::sort::{Record, Sorter};
 use std::path::{Path, PathBuf};
 
-pub fn run(ctx: &mut Ctx, cli: &Cli) -> Result<(), AppError> {
+pub fn run(ctx: &mut Ctx, cli: &Cli, locale: Locale) -> Result<(), AppError> {
     let inputs = input_names(ctx, cli)?;
     let check = check_mode(cli);
     if check.is_some() && cli.merge {
@@ -19,7 +20,16 @@ pub fn run(ctx: &mut Ctx, cli: &Cli) -> Result<(), AppError> {
             inputs.len()
         )));
     }
-    let sorter = sorter(cli)?;
+    let mut sorter = Sorter {
+        collator: locale.collator,
+        numbers: locale.numbers,
+        ..sorter(cli)?
+    };
+    // As in sort, a -t that is also the thousands separator is only a field
+    // separator.
+    if sorter.separator.is_some() && sorter.separator == sorter.numbers.thousands {
+        sorter.numbers.thousands = None;
+    }
     let sep = if cli.zero_terminated { b'\0' } else { b'\n' };
 
     let mut per_input = Vec::with_capacity(inputs.len());
@@ -86,6 +96,7 @@ fn sorter(cli: &Cli) -> Result<Sorter, AppError> {
         reverse: cli.reverse,
         unique: cli.unique,
         stable: cli.stable || cli.unique,
+        ..Sorter::default()
     })
 }
 

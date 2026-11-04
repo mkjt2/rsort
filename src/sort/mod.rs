@@ -1,9 +1,11 @@
 //! The sort engine: records with precomputed keys, the comparator, and the
 //! sort, unique, merge and check operations built on it.
 
+pub mod collate;
 pub mod key;
 pub mod value;
 
+use collate::{Collator, NumberFormat};
 use key::KeyDef;
 use std::cmp::Ordering;
 use value::Value;
@@ -23,6 +25,10 @@ pub struct Sorter {
     pub unique: bool,
     /// `-s`: no last-resort comparison.
     pub stable: bool,
+    /// How text compares (bytes or the locale).
+    pub collator: Collator,
+    /// The locale's decimal point and thousands separator.
+    pub numbers: NumberFormat,
 }
 
 /// One input line and the keys computed from it.
@@ -35,19 +41,24 @@ pub struct Record {
 impl Sorter {
     /// Decorate a line with its sort keys.
     pub fn record(&self, line: Vec<u8>) -> Record {
+        let cx = value::Context {
+            seed: self.seed,
+            utf8: self.collator.is_utf8(),
+            numbers: self.numbers,
+        };
         let values = self
             .keys
             .iter()
             .map(|k| {
-                let (begin, end) = k.range(&line, self.separator);
-                value::value(&line, begin, end, &k.order, self.seed)
+                let (begin, end) = k.range(&line, self.separator, cx.utf8);
+                value::value(&line, begin, end, &k.order, &cx)
             })
             .collect();
         Record { line, values }
     }
 
     fn text(&self, a: &[u8], b: &[u8]) -> Ordering {
-        a.cmp(b)
+        self.collator.compare(a, b)
     }
 
     /// Compare by keys only (what `-u` uses to decide equality).

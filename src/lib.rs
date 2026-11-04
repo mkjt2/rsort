@@ -63,7 +63,9 @@ pub fn run(args: Vec<OsString>, io: Io) -> i32 {
         json,
         color,
     };
-    let result = commands::root::run(&mut ctx, &cli);
+    let locale = sort::collate::locale_name(io.env);
+    let locale = sort::collate::Locale::activate(locale.as_deref());
+    let result = commands::root::run(&mut ctx, &cli, locale);
     finish(result, ctx.json, ctx.color, ctx.err)
 }
 

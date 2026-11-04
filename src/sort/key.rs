@@ -125,18 +125,19 @@ impl KeyDef {
     }
 
     /// The bytes of this key in `line`, split by `sep` (or runs of blanks).
-    pub fn extract<'a>(&self, line: &'a [u8], sep: Option<u8>) -> &'a [u8] {
-        let (begin, end) = self.range(line, sep);
+    pub fn extract<'a>(&self, line: &'a [u8], sep: Option<u8>, utf8: bool) -> &'a [u8] {
+        let (begin, end) = self.range(line, sep, utf8);
         &line[begin..end.max(begin)]
     }
 
-    /// Byte range of the key; `end < begin` means an empty key.
-    pub fn range(&self, line: &[u8], sep: Option<u8>) -> (usize, usize) {
+    /// Byte range of the key; `end < begin` means an empty key. Character
+    /// offsets count UTF-8 characters when `utf8`, bytes otherwise.
+    pub fn range(&self, line: &[u8], sep: Option<u8>, utf8: bool) -> (usize, usize) {
         let mut begin = field_start(line, self.start.field, sep);
         if self.start.blanks {
             begin = skip_blanks(line, begin);
         }
-        let begin = (begin + self.start.char - 1).min(line.len());
+        let begin = advance(line, begin, self.start.char - 1, utf8);
         let end = match self.end {
             None => line.len(),
             Some(pos) if pos.char == 0 => field_end(line, field_start(line, pos.field, sep), sep),
@@ -145,7 +146,7 @@ impl KeyDef {
                 if pos.blanks {
                     e = skip_blanks(line, e);
                 }
-                (e + pos.char).min(line.len())
+                advance(line, e, pos.char, utf8)
             }
         };
         (begin, end)
@@ -199,6 +200,23 @@ fn number(digits: &str) -> Option<Result<usize, String>> {
         return None;
     }
     Some(digits.parse().map_err(|_| "number too large".to_string()))
+}
+
+/// The index `n` characters (or bytes) after `i`, at most the line length.
+fn advance(line: &[u8], mut i: usize, n: usize, utf8: bool) -> usize {
+    if !utf8 {
+        return i.saturating_add(n).min(line.len());
+    }
+    for _ in 0..n {
+        if i >= line.len() {
+            break;
+        }
+        i += 1;
+        while i < line.len() && line[i] & 0xC0 == 0x80 {
+            i += 1;
+        }
+    }
+    i
 }
 
 pub fn is_blank(b: u8) -> bool {
@@ -257,7 +275,7 @@ mod tests {
     }
 
     fn get<'a>(spec: &str, line: &'a str, sep: Option<u8>) -> &'a str {
-        std::str::from_utf8(key(spec).extract(line.as_bytes(), sep)).unwrap()
+        std::str::from_utf8(key(spec).extract(line.as_bytes(), sep, false)).unwrap()
     }
 
     #[test]
@@ -286,6 +304,14 @@ mod tests {
         assert_eq!(get("2.2b,2.3", "x   zab", None), "");
         assert_eq!(get("2.2b,2.3b", "x   zab", None), "ab");
         assert_eq!(get("1,1.0", "ab cd", None), "ab");
+    }
+
+    #[test]
+    fn utf8_offsets_count_characters() {
+        let k = key("1.2,1.3");
+        assert_eq!(k.extract("éxyz".as_bytes(), None, true), b"xy");
+        assert_eq!(k.extract("éxyz".as_bytes(), None, false), b"\xa9x");
+        assert_eq!(k.extract("é".as_bytes(), None, true), b"");
     }
 
     #[test]

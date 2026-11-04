@@ -1,5 +1,6 @@
 //! Comparable key values, one kind per ordering mode, computed once per line.
 
+use super::collate::NumberFormat;
 use super::key::{Mode, Order, is_blank, skip_blanks};
 use std::cmp::Ordering;
 use std::hash::Hasher;
@@ -18,24 +19,34 @@ pub enum Value {
     Random(u64, Vec<u8>),
 }
 
+/// What key values depend on beyond the key itself.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Context {
+    /// Seed for `-R` hashes.
+    pub seed: u64,
+    /// UTF-8 locale: text options work by character.
+    pub utf8: bool,
+    pub numbers: NumberFormat,
+}
+
 /// Compute the value of the key at `begin..end` of `line`. As in sort, -d,
 /// -i and -f rewrite the key before any mode interprets it.
-pub fn value(line: &[u8], begin: usize, end: usize, order: &Order, seed: u64) -> Value {
+pub fn value(line: &[u8], begin: usize, end: usize, order: &Order, cx: &Context) -> Value {
     let end = end.max(begin);
     if order.mode == Mode::Text && !(order.fold || order.dictionary || order.nonprinting) {
         return Value::Range(begin, end);
     }
-    let key = transform(&line[begin..end], order);
+    let key = transform(&line[begin..end], order, cx.utf8);
     match order.mode {
         Mode::Text => Value::Text(key),
-        Mode::Numeric => Value::Numeric(Decimal::parse(&key).0),
-        Mode::General => Value::General(General::parse(&key)),
-        Mode::Human => Value::Human(Human::parse(&key)),
+        Mode::Numeric => Value::Numeric(Decimal::parse(&key, &cx.numbers).0),
+        Mode::General => Value::General(General::parse(&key, cx.numbers.decimal)),
+        Mode::Human => Value::Human(Human::parse(&key, &cx.numbers)),
         Mode::Month => Value::Month(month(&key)),
         Mode::Version => Value::Version(key),
         Mode::Random => {
             let mut h = std::hash::DefaultHasher::new();
-            h.write_u64(seed);
+            h.write_u64(cx.seed);
             h.write(&key);
             Value::Random(h.finish(), key)
         }
@@ -66,9 +77,13 @@ pub fn compare(
 }
 
 /// Apply -d (keep blanks and alphanumerics) or else -i (keep printable),
-/// then -f (fold to uppercase), byte by byte as in the C locale. As in sort,
-/// -d wins over -i: with both, a tab is kept.
-pub fn transform(raw: &[u8], order: &Order) -> Vec<u8> {
+/// then -f (fold to uppercase). As in sort, -d wins over -i: with both, a
+/// tab is kept. In a UTF-8 locale valid text is handled by character;
+/// otherwise byte by byte as in the C locale.
+pub fn transform(raw: &[u8], order: &Order, utf8: bool) -> Vec<u8> {
+    if utf8 && let Ok(text) = std::str::from_utf8(raw) {
+        return transform_chars(text, order).into_bytes();
+    }
     let keep = |b: u8| {
         if order.dictionary {
             is_blank(b) || b.is_ascii_alphanumeric()
@@ -90,6 +105,27 @@ pub fn transform(raw: &[u8], order: &Order) -> Vec<u8> {
         .collect()
 }
 
+fn transform_chars(text: &str, order: &Order) -> String {
+    let keep = |c: char| {
+        if order.dictionary {
+            c == ' ' || c == '\t' || c.is_alphanumeric()
+        } else if order.nonprinting {
+            !c.is_control()
+        } else {
+            true
+        }
+    };
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars().filter(|&c| keep(c)) {
+        let mut upper = c.to_uppercase();
+        match (order.fold, upper.next(), upper.next()) {
+            (true, Some(u), None) => out.push(u),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 // --- -n --------------------------------------------------------------------
 
 /// An exact decimal: sign, integer digits without leading zeros, fraction
@@ -102,21 +138,30 @@ pub struct Decimal {
 }
 
 impl Decimal {
-    /// Parse `[blanks][-]digits[.digits]`; returns the value and the index
-    /// just after it. Anything else is zero.
-    pub fn parse(s: &[u8]) -> (Decimal, usize) {
+    /// Parse `[blanks][-]digits[.digits]`, with the locale's decimal point
+    /// and thousands separators (each followed by a digit or the decimal
+    /// point) in the integer part; returns the value and the index just
+    /// after it. Anything else is zero.
+    pub fn parse(s: &[u8], fmt: &NumberFormat) -> (Decimal, usize) {
         let mut i = skip_blanks(s, 0);
         let negative = s.get(i) == Some(&b'-');
         if negative {
             i += 1;
         }
-        let int_start = i;
-        while i < s.len() && s[i].is_ascii_digit() {
+        let mut int = Vec::new();
+        loop {
+            match s.get(i) {
+                Some(&d) if d.is_ascii_digit() => int.push(d),
+                Some(&t)
+                    if Some(t) == fmt.thousands
+                        && s.get(i + 1)
+                            .is_some_and(|&n| n.is_ascii_digit() || n == fmt.decimal) => {}
+                _ => break,
+            }
             i += 1;
         }
-        let int = &s[int_start..i];
         let mut frac: &[u8] = &[];
-        if s.get(i) == Some(&b'.') {
+        if s.get(i) == Some(&fmt.decimal) {
             let f_start = i + 1;
             let mut j = f_start;
             while j < s.len() && s[j].is_ascii_digit() {
@@ -127,7 +172,8 @@ impl Decimal {
                 i = j;
             }
         }
-        let int: Vec<u8> = int.iter().copied().skip_while(|&d| d == b'0').collect();
+        let leading = int.iter().take_while(|&&d| d == b'0').count();
+        int.drain(..leading);
         let frac_len = frac.iter().rposition(|&d| d != b'0').map_or(0, |p| p + 1);
         let frac = frac[..frac_len].to_vec();
         let negative = negative && !(int.is_empty() && frac.is_empty());
@@ -182,8 +228,8 @@ pub struct Human {
 }
 
 impl Human {
-    pub fn parse(s: &[u8]) -> Human {
-        let (mut value, end) = Decimal::parse(s);
+    pub fn parse(s: &[u8], fmt: &NumberFormat) -> Human {
+        let (mut value, end) = Decimal::parse(s, fmt);
         let suffix = match s.get(end) {
             Some(b'k') => 1,
             Some(&c) => b"KMGTPEZY"
@@ -260,8 +306,9 @@ impl General {
         }
     }
 
-    /// Parse the longest strtod prefix after leading whitespace.
-    pub fn parse(s: &[u8]) -> General {
+    /// Parse the longest strtod prefix after leading whitespace, with
+    /// `decimal` as the decimal point.
+    pub fn parse(s: &[u8], decimal: u8) -> General {
         let mut i = 0;
         while i < s.len() && s[i].is_ascii_whitespace() {
             i += 1;
@@ -277,14 +324,17 @@ impl General {
             f64::INFINITY
         } else if starts(b"nan") {
             return General::NaN;
-        } else if let Some(v) = parse_hex(rest) {
+        } else if let Some(v) = parse_hex(rest, decimal) {
             v
         } else {
-            let len = decimal_prefix(rest);
+            let len = decimal_prefix(rest, decimal);
             if len == 0 {
                 return General::NotNumber;
             }
-            let text = std::str::from_utf8(&rest[..len]).unwrap_or("0");
+            let text: String = rest[..len]
+                .iter()
+                .map(|&b| if b == decimal { '.' } else { b as char })
+                .collect();
             let v: f64 = text.parse().unwrap_or(0.0);
             if v.is_infinite() {
                 return if negative {
@@ -300,12 +350,12 @@ impl General {
 }
 
 /// Length of `digits[.digits][e[+-]digits]` with at least one mantissa digit.
-fn decimal_prefix(s: &[u8]) -> usize {
+fn decimal_prefix(s: &[u8], decimal: u8) -> usize {
     let digits = |from: usize| s[from..].iter().take_while(|b| b.is_ascii_digit()).count();
     let int = digits(0);
     let mut i = int;
     let mut frac = 0;
-    if s.get(i) == Some(&b'.') {
+    if s.get(i) == Some(&decimal) {
         frac = digits(i + 1);
         if int + frac > 0 {
             i += 1 + frac;
@@ -328,7 +378,7 @@ fn decimal_prefix(s: &[u8]) -> usize {
 }
 
 /// `0x` hex floats: hex digits, optional fraction, optional `p` exponent.
-fn parse_hex(s: &[u8]) -> Option<f64> {
+fn parse_hex(s: &[u8], decimal: u8) -> Option<f64> {
     let body = s.strip_prefix(b"0x").or_else(|| s.strip_prefix(b"0X"))?;
     let hex = |b: &u8| (*b as char).to_digit(16);
     let mut value = 0f64;
@@ -339,7 +389,7 @@ fn parse_hex(s: &[u8]) -> Option<f64> {
         i += 1;
         any = true;
     }
-    if body.get(i) == Some(&b'.') {
+    if body.get(i) == Some(&decimal) {
         let mut scale = 1.0 / 16.0;
         i += 1;
         while let Some(d) = body.get(i).and_then(hex) {
@@ -496,8 +546,21 @@ fn verrevcmp(a: &[u8], b: &[u8]) -> Ordering {
 mod tests {
     use super::*;
 
+    const C: NumberFormat = NumberFormat {
+        decimal: b'.',
+        thousands: None,
+    };
+    const US: NumberFormat = NumberFormat {
+        decimal: b'.',
+        thousands: Some(b','),
+    };
+    const DE: NumberFormat = NumberFormat {
+        decimal: b',',
+        thousands: Some(b'.'),
+    };
+
     fn dec(s: &str) -> Decimal {
-        Decimal::parse(s.as_bytes()).0
+        Decimal::parse(s.as_bytes(), &C).0
     }
 
     #[test]
@@ -509,14 +572,30 @@ mod tests {
         assert!(dec("-2") < dec("-1.5"));
         assert!(dec(".5") < dec("1"));
         assert!(dec("10") > dec("9.99"));
-        assert_eq!(Decimal::parse(b" 12.5x").1, 5);
-        assert_eq!(Decimal::parse(b"1.x").1, 2);
-        assert_eq!(Decimal::parse(b".x").1, 0);
+        assert_eq!(Decimal::parse(b" 12.5x", &C).1, 5);
+        assert_eq!(Decimal::parse(b"1.x", &C).1, 2);
+        assert_eq!(Decimal::parse(b".x", &C).1, 0);
+    }
+
+    #[test]
+    fn decimals_with_locale_separators() {
+        let us = |s: &str| Decimal::parse(s.as_bytes(), &US).0;
+        assert_eq!(us("1,000"), dec("1000"));
+        assert_eq!(us(",5"), dec("5"));
+        assert_eq!(us("1,,0"), dec("1"));
+        assert_eq!(us(",.9"), dec("0.9"));
+        assert_eq!(us("1,.5"), dec("1.5"));
+        assert_eq!(us("1,"), dec("1"));
+        assert_eq!(us("-1,000.5"), dec("-1000.5"));
+        assert_eq!(us("1.5,0"), dec("1.5"), "no separators in the fraction");
+        let de = |s: &str| Decimal::parse(s.as_bytes(), &DE).0;
+        assert_eq!(de("1.234,5"), dec("1234.5"));
+        assert_eq!(de("1,5"), dec("1.5"));
     }
 
     #[test]
     fn human() {
-        let h = |s: &str| Human::parse(s.as_bytes());
+        let h = |s: &str| Human::parse(s.as_bytes(), &C);
         assert!(h("2") < h("1K"));
         assert!(h("1K") == h("1k"));
         assert!(h("999K") < h("1M"));
@@ -524,11 +603,12 @@ mod tests {
         assert!(h("-2K") < h("-1K"));
         assert!(h("0K") == h("K"));
         assert!(h("1Y") > h("1Z"));
+        assert!(Human::parse(b"1,0K", &US) > h("2K"));
     }
 
     #[test]
     fn general() {
-        let g = |s: &str| General::parse(s.as_bytes());
+        let g = |s: &str| General::parse(s.as_bytes(), b'.');
         assert_eq!(g("abc"), General::NotNumber);
         assert_eq!(g("-nan"), General::NaN);
         assert_eq!(g("  -INFINITY"), General::Number(f64::NEG_INFINITY));
@@ -543,6 +623,9 @@ mod tests {
         assert_eq!(g("."), General::NotNumber);
         assert_eq!(g("-0").compare(&g("0")), Ordering::Equal);
         assert_eq!(g("nan").compare(&g("abc")), Ordering::Greater);
+        assert_eq!(General::parse(b"1,5e1", b','), General::Number(15.0));
+        assert_eq!(General::parse(b"1.5", b','), General::Number(1.0));
+        assert_eq!(General::parse(b"0x1,8", b','), General::Number(1.5));
     }
 
     #[test]
@@ -579,11 +662,29 @@ mod tests {
             nonprinting: true,
             ..Order::default()
         };
-        assert_eq!(transform(b"a-b\x01\t c\xe9", &order), b"AB\t C");
+        assert_eq!(transform(b"a-b\x01\t c\xe9", &order, false), b"AB\t C");
         let order = Order {
             nonprinting: true,
             ..Order::default()
         };
-        assert_eq!(transform(b"a-b\x01\t c\xe9", &order), b"a-b c");
+        assert_eq!(transform(b"a-b\x01\t c\xe9", &order, false), b"a-b c");
+        assert_eq!(
+            transform("é\u{1}\tß".as_bytes(), &order, true),
+            "éß".as_bytes()
+        );
+        let fold = Order {
+            fold: true,
+            dictionary: true,
+            ..Order::default()
+        };
+        assert_eq!(
+            transform("é-ß x".as_bytes(), &fold, true),
+            "Éß X".as_bytes()
+        );
+        assert_eq!(
+            transform(b"\xffa", &fold, true),
+            b"A",
+            "invalid UTF-8 goes by bytes"
+        );
     }
 }

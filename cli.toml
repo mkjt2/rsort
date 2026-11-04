@@ -62,13 +62,18 @@ Accepted and ignored for script compatibility (in-memory sort, no tuning knobs):
 --compress-program, --radixsort, --mergesort, --qsort, --heapsort, --mmap.
 
 - -c/-C with more than one FILE is a usage error (exit 2); sort silently exits 0.
+- --files0-from with FILE operands is a usage error; sort silently ignores the operands.
+- -c with -m is a usage error (exit 2); sort exits 1.
 
 Collation: follow the locale like sort. When LC_ALL / LC_COLLATE / LANG select a \
 non-C locale, compare text keys with libc strcoll (lines containing NUL fall back to \
 byte order for the bytes after it); otherwise compare bytes. On the static musl Linux \
 builds strcoll is byte order, so Linux output is always byte order (documented in the \
-README). Numeric, month, version and random comparisons are locale-independent \
-(C rules), as in sort's C-locale behavior for -V. Cases pin LC_ALL=C; the build adds a \
+README). Numbers follow the locale too, as in sort: -n and -h accept the locale's \
+decimal point and single-byte thousands separator (en_US: 1,000 = 1000), and -g uses \
+its decimal point. Month, version and random comparisons use C rules. Invalid UTF-8 \
+in a UTF-8 locale compares by bytes (sort fails with "Illegal byte sequence"), and \
+-k character offsets count characters in UTF-8 locales. Cases pin LC_ALL=C; the build adds a \
 macOS-only test (cfg(target_os = "macos")) that compares `rsort` and `/usr/bin/sort` \
 under LC_ALL=en_US.UTF-8 on mixed-case and punctuation input, because [[case]]s \
 cannot be platform-conditional.
