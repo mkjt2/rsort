@@ -16,6 +16,25 @@ pub enum Collator {
     Locale { utf8: bool },
 }
 
+unsafe extern "C" {
+    fn mbtowc(pwc: *mut libc::wchar_t, s: *const libc::c_char, n: libc::size_t) -> libc::c_int;
+}
+
+/// Whether LC_CTYPE decodes UTF-8: mbtowc reads "€" as one character,
+/// U+20AC. Asked of the C library because macOS names don't tell: bare
+/// "en_US" or "ja_JP" are UTF-8 with an empty CODESET, and
+/// "sr_RS.UTF-8@latin" reports "UTF-8@latin".
+fn decodes_utf8() -> bool {
+    let euro = c"\u{20ac}";
+    let mut wc: libc::wchar_t = 0;
+    // SAFETY: a null `s` resets mbtowc's shift state; then `euro` is a
+    // valid NUL-terminated string of which at most 4 bytes are read.
+    unsafe {
+        mbtowc(std::ptr::null_mut(), std::ptr::null(), 0);
+        mbtowc(&mut wc, euro.as_ptr(), 4) == 3 && wc as u32 == 0x20ac
+    }
+}
+
 /// The categories `setlocale(LC_ALL, "")` sets, with their variables.
 const CATEGORIES: [(libc::c_int, &str); 6] = [
     (libc::LC_COLLATE, "LC_COLLATE"),
@@ -166,10 +185,7 @@ impl Locale {
         }
         // SAFETY: nl_langinfo and setlocale(…, NULL) return NUL-terminated
         // strings that stay valid until the next setlocale; both are copied.
-        let codeset = unsafe { CStr::from_ptr(libc::nl_langinfo(libc::CODESET)) }
-            .to_string_lossy()
-            .to_ascii_lowercase();
-        let utf8 = matches!(codeset.as_str(), "utf-8" | "utf8");
+        let utf8 = decodes_utf8();
         let collate = unsafe { libc::setlocale(libc::LC_COLLATE, std::ptr::null()) };
         let collate = if collate.is_null() {
             "C".into()

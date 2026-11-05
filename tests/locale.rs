@@ -315,6 +315,21 @@ mod oracle {
     }
 
     #[test]
+    fn locales_named_without_an_encoding_are_utf8() {
+        // macOS "en_US" or "ja_JP" are UTF-8 though nl_langinfo(CODESET) is
+        // empty; "sr_RS.UTF-8@latin" reports "UTF-8@latin".
+        for locale in ["en_US", "ru_RU", "ja_JP", "sr_RS.UTF-8@latin"] {
+            for args in [&["-k1.2"][..], &["-f"], &["-d"]] {
+                same_as_sort(
+                    &[("LANG", locale)],
+                    args,
+                    "zb\n\u{e9}a\n\u{e9}-\u{c9}\n".as_bytes(),
+                );
+            }
+        }
+    }
+
+    #[test]
     fn categories_come_from_their_own_variables() {
         let text = CYRILLIC.as_bytes();
         for env in [

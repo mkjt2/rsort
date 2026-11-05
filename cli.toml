@@ -79,10 +79,12 @@ its own LC_* variable, then LANG, and if any names a missing locale every catego
 stays C. LC_COLLATE: C and POSIX compare bytes; otherwise text compares like sort's \
 bwscoll: strcoll on each NUL-separated part, then the shorter string (in characters) \
 first, with no byte tie-break, so lines a locale collates the same (macOS gives \
-Cyrillic no weight in en_US.UTF-8) keep their input order. LC_CTYPE: in UTF-8, -k \
+Cyrillic no weight in en_US.UTF-8) keep their input order. LC_CTYPE (UTF-8 when mbtowc decodes it, \
+whatever the name says: macOS "en_US" has an empty CODESET): in UTF-8, -k \
 character offsets count characters and -d/-i/-f use iswalnum/iswprint/towupper; in \
 single-byte encodings (every other macOS locale, Big5HKSCS included) they use the \
-byte classes isalnum/isprint/toupper. LC_NUMERIC: -n and -h follow sort's read_number \
+byte classes isalnum/isprint/toupper. Other multibyte encodings (eucJP, SJIS, GBK, \
+Big5, eucKR) are handled as single bytes, a documented difference. LC_NUMERIC: -n and -h follow sort's read_number \
 and numcoll: the locale's minus sign, thousands separator and decimal point, read as \
 sort does with mbtowc (one character; a single-byte locale takes the first byte of a \
 longer one), at most 128 integer and 128 fraction digits, leading zeros dropped only \

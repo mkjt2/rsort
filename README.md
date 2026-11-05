@@ -67,6 +67,10 @@ collation: text always compares in byte order there, and numbers use C rules.
 - `--files0-from -` reads the file list from stdin.
 - Invalid UTF-8 in a UTF-8 locale compares by bytes; sort fails with
   "Illegal byte sequence".
+- Multibyte encodings other than UTF-8 (ja_JP.eucJP, ja_JP.SJIS, zh_CN.GBK,
+  zh_CN.GB18030, zh_TW.Big5, ko_KR.eucKR, ...) are handled as single bytes:
+  `-k` character offsets and `-d`/`-i`/`-f` go by byte there. Collation still
+  uses the locale.
 - `GNUSORT_COMPATIBLE_BLANKS` (blanks are all white space) is not supported.
 - In kk_KZ.PT154, whose collation macOS can't use (strcoll fails), the order
   differs.
