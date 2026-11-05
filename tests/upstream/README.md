@@ -11,6 +11,7 @@ its test suites:
 | `sort/testsuite/run.sh` | Differential run against a reference sort: `sample.txt` in 6 locales × 5 flag sets × separators × `-k`/`+POS` positions (about 3 million runs), each output checked with `-c`; plus `bigsample.txt` (155 MB) | `scripts/compat.py` (`just compat`): the same matrix against `/usr/bin/sort`, plus the real `ru_RU.ISO8859-5` next to run.sh's misspelled one. `--quick` runs every 50th case. Inputs in `testsuite/`. |
 | `tests/sort_vers.c` | `/usr/bin/sort --version` contains `-Apple` and a version number | Not applicable: rsort reports its own version (`tests/cli.rs` checks `--version`). |
 
-`t_sort.sh` is under the NetBSD 2-clause BSD license (its notice is in
-`tests/upstream.rs`); the testsuite inputs come from FreeBSD's sort, also
-BSD-licensed.
+`t_sort.sh` is under the NetBSD Foundation's 2-clause BSD license; its full
+notice is at the top of `tests/upstream.rs`. The testsuite inputs come from
+FreeBSD sort's test suite and carry no license notice of their own; they are
+included unchanged. See `NOTICE` in the repository root.

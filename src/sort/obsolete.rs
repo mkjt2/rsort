@@ -7,6 +7,8 @@
 //! `,(F+1).C`. Like sort, this rewrites every argument up to `--`, whatever
 //! its position; an argument that doesn't match is left alone (so `+x` is a
 //! file name).
+//!
+//! Parts of this follow FreeBSD sort's source closely; see NOTICE.
 
 use std::ffi::OsString;
 

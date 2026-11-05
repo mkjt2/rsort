@@ -1,5 +1,7 @@
 //! Key values: a fixed-size summary per key that decides most comparisons,
 //! and the full comparison of two keys for when summaries can't.
+//!
+//! Parts of this follow FreeBSD sort's source closely; see NOTICE.
 
 use super::collate::{self, Collator, NumberFormat, Symbol};
 use super::ctype;

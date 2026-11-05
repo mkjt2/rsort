@@ -1,6 +1,8 @@
 //! Locale support, as sort sets it up with `setlocale(LC_ALL, "")`: text
 //! collation (byte order in the C and POSIX locales, strcoll otherwise), the
 //! character set (UTF-8 or single bytes), and the number format.
+//!
+//! Parts of this follow FreeBSD sort's source closely; see NOTICE.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;

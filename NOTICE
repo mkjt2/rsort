@@ -1,0 +1,51 @@
+rsort
+Copyright (c) 2026 Jackie Tung
+Licensed under either of the Apache License, Version 2.0 (LICENSE-APACHE) or
+the MIT license (LICENSE-MIT), at your option.
+
+rsort is a Rust reimplementation of macOS sort, whose source is BSD sort
+from FreeBSD as shipped in Apple's text_cmds
+(https://github.com/apple-oss-distributions/text_cmds, commit 592aaf8). No
+C code is copied, but parts of rsort follow that source's logic closely so
+that its output matches: string collation (bwscoll), number reading and
+comparison (read_number, numcoll), version sort (vcmp), general numbers
+(bwstod), locale setup, -t parsing, and the obsolete +POS key rewrite
+(fix_obsolete_keys). That source carries this notice:
+
+-------------------------------------------------------------------------------
+SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+
+Copyright (C) 2009 Gabor Kovesdan <gabor@FreeBSD.org>
+Copyright (C) 2012 Oleg Moskalenko <mom040267@gmail.com>
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGE.
+-------------------------------------------------------------------------------
+
+The test suite (not part of the rsort binary) includes:
+
+- tests/upstream.rs: a port of sort/tests/t_sort.sh from the same
+  repository, which comes from NetBSD and is under the NetBSD Foundation's
+  2-clause BSD license. Its full notice is at the top of that file.
+- tests/upstream/testsuite/sample.txt and bigsample.txt.xz: test inputs from
+  sort/testsuite in the same repository (FreeBSD sort's test suite). They
+  carry no license notice of their own and are included unchanged.

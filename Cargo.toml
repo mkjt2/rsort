@@ -9,7 +9,7 @@ repository = "https://github.com/mkjt2/rsort"
 readme = "README.md"
 keywords = ["cli"]
 categories = ["command-line-utilities"]
-include = ["src/**/*", "build.rs", "cli.toml", "Cargo.toml", "Cargo.lock", "README.md", "CHANGELOG.md"]
+include = ["src/**/*", "build.rs", "cli.toml", "Cargo.toml", "Cargo.lock", "README.md", "CHANGELOG.md", "LICENSE-MIT", "LICENSE-APACHE", "NOTICE"]
 
 [[bin]]
 name = "rsort"

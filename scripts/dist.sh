@@ -50,7 +50,7 @@ package() {
   mkdir -p "dist/stage/$dir"
   cp "$bin" "dist/stage/$dir/$NAME"
   cp -R "$extras/completions" "$extras/man" "dist/stage/$dir/"
-  for f in README.md CHANGELOG.md LICENSE*; do [[ -e "$f" ]] && cp "$f" "dist/stage/$dir/"; done
+  for f in README.md CHANGELOG.md LICENSE* NOTICE; do [[ -e "$f" ]] && cp "$f" "dist/stage/$dir/"; done
   tar -C dist/stage -czf "dist/$dir.tar.gz" "$dir"
   info "packaged dist/$dir.tar.gz"
 }

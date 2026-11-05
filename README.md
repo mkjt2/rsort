@@ -108,3 +108,12 @@ The interface is defined in [`cli.toml`](cli.toml): commands, flags, help text,
 exit codes and JSON output schemas. `build.rs` turns it into Rust at build
 time, so the binary doesn't parse it, and `tests/conformance.rs` fails if the
 code drifts from it.
+
+## License
+
+Licensed under either of [Apache License 2.0](LICENSE-APACHE) or
+[MIT](LICENSE-MIT), at your option.
+
+rsort follows the logic of macOS sort (FreeBSD's BSD sort, 2-clause BSD
+license) closely enough to match its output, and its tests include a port of
+NetBSD's sort tests; see [`NOTICE`](NOTICE) for both notices.
