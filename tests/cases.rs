@@ -9,7 +9,7 @@ use std::path::Path;
 
 #[test]
 fn cases_from_cli_toml() {
-    let spec = rsort::spec::Spec::get();
+    let spec = common::spec::Spec::get();
     let mut failures = Vec::new();
     for case in &spec.cases {
         let dir = tempfile::tempdir().unwrap();

@@ -9,7 +9,7 @@ use predicates::prelude::*;
 
 #[test]
 fn version_goes_to_stdout() {
-    let spec = rsort::spec::Spec::get();
+    let spec = common::spec::Spec::get();
     let Some(flag) = spec.cli.version_flags.first() else {
         return; // no version flag
     };
@@ -70,7 +70,7 @@ fn json_output_coverage_is_complete() {
     // calls `common::assert_matches_schema`, or be listed here with a reason.
     const UNTESTABLE: &[(&str, &str)] = &[];
     const TESTED: &[&str] = &[];
-    let spec = rsort::spec::Spec::get();
+    let spec = common::spec::Spec::get();
     for c in &spec.commands {
         if c.output_schema.is_some() {
             assert!(

@@ -3,6 +3,10 @@
 
 use std::path::Path;
 
+/// The typed `cli.toml` model, shared with build.rs.
+#[path = "../../src/spec/model.rs"]
+pub mod spec;
+
 /// `<NAME>_` prefix used by this CLI's environment variables.
 pub fn env_prefix() -> String {
     format!(
@@ -31,7 +35,7 @@ pub fn cmd(home: &Path) -> assert_cmd::Command {
 
 /// Validate `json` against the `output_schema` declared for `path` in cli.toml.
 pub fn assert_matches_schema(path: &str, json: &serde_json::Value) {
-    let spec = rsort::spec::Spec::get();
+    let spec = spec::Spec::get();
     let command = spec
         .command(path)
         .unwrap_or_else(|| panic!("no command `{path}` in cli.toml"));

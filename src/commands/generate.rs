@@ -2,7 +2,6 @@
 //! interface. Hidden from --help; release scripts use it to build archives.
 
 use crate::error::AppError;
-use crate::spec::Spec;
 use std::io::Write;
 
 /// Everything `--generate` accepts.
@@ -22,7 +21,7 @@ pub fn run(out: &mut dyn Write, what: &str) -> Result<(), AppError> {
         .and_then(|s| s.parse::<clap_complete::Shell>().ok());
     match (what, shell) {
         ("man", _) => clap_mangen::Man::new(crate::cli::command()).render(out)?,
-        ("schema", _) => writeln!(out, "{}", super::schema::document(Spec::get()))?,
+        ("schema", _) => writeln!(out, "{}", crate::spec::SCHEMA)?,
         (_, Some(shell)) => super::completions::write(out, shell)?,
         _ => {
             return Err(AppError::Usage(format!(

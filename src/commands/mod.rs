@@ -4,4 +4,3 @@ pub mod completions;
 pub mod generate;
 pub mod man;
 pub mod root;
-pub mod schema;

@@ -6,7 +6,7 @@ mod common;
 #[test]
 fn help_snapshots() {
     let home = tempfile::tempdir().unwrap();
-    let spec = rsort::spec::Spec::get();
+    let spec = common::spec::Spec::get();
     let Some(help_flag) = spec.cli.help_flags.iter().find(|f| f.starts_with("--")) else {
         return; // no long help flag
     };
@@ -32,7 +32,7 @@ fn help_snapshots() {
 
 #[test]
 fn short_help_is_shorter_and_omits_exit_codes() {
-    let spec = rsort::spec::Spec::get();
+    let spec = common::spec::Spec::get();
     let (Some(short), Some(long)) = rsort::spec::split_flags(&spec.cli.help_flags) else {
         return; // no short/long pair of help flags to compare
     };

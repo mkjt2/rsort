@@ -14,7 +14,7 @@ use cli::Cli;
 use cli::ColorWhen;
 use ctx::{Ctx, Terminal};
 use error::{AppError, JsonError};
-use spec::Spec;
+use spec::SPEC;
 use std::ffi::OsString;
 use std::io::{BufRead, ErrorKind, Write};
 
@@ -29,8 +29,7 @@ pub struct Io<'a> {
 
 /// Parse `args` (including argv\[0\]), run the command, and return the exit code.
 pub fn run(args: Vec<OsString>, io: Io) -> i32 {
-    let spec = Spec::get();
-    let json = spec.kit.json && args.iter().any(|a| a == "--json");
+    let json = SPEC.json && args.iter().any(|a| a == "--json");
     let no_color = (io.env)("NO_COLOR").is_some_and(|v| !v.is_empty());
 
     // `<name> --generate <what>` is handled before parsing so it works in every
@@ -189,7 +188,7 @@ mod tests {
     fn other_flush_failures_are_errors() {
         let mut err = Vec::new();
         let code = flush_stdout(&mut Failing(ErrorKind::Other), &mut err, 0);
-        assert_eq!(code, Spec::get().cli.error_exit_code);
+        assert_eq!(code, SPEC.error_exit_code);
         assert!(!err.is_empty());
         assert_eq!(flush_stdout(&mut Vec::new(), &mut err, 7), 7);
     }

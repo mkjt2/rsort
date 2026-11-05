@@ -5,9 +5,11 @@
 //! design: change the code unless the spec itself needs to change (and then
 //! re-approve it with the user).
 
+mod common;
+
 use clap::{ArgAction, CommandFactory};
+use common::spec::{Arg, Flag, FlagKind, Spec};
 use rsort::cli::Cli;
-use rsort::spec::{Arg, Flag, FlagKind, Spec};
 use std::collections::BTreeSet;
 
 fn kind_of(arg: &clap::Arg) -> Option<FlagKind> {
@@ -352,11 +354,7 @@ fn help_and_version_flags_match_cli_toml() {
             continue; // clap's built-in flag
         }
         assert_eq!(arg.and_then(|a| a.get_short()), short, "{id} short flag");
-        assert_eq!(
-            arg.and_then(|a| a.get_long()).map(String::from),
-            long,
-            "{id} long flag"
-        );
+        assert_eq!(arg.and_then(|a| a.get_long()), long, "{id} long flag");
     }
 }
 
@@ -379,4 +377,156 @@ fn every_flag_and_command_has_help_text_applied() {
     let mut problems = Vec::new();
     walk(&cmd, "", &mut problems);
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn generated_interface_matches_cli_toml() {
+    // build.rs renders cli.toml into rsort::spec; this catches a stale or
+    // wrong rendering.
+    let spec = Spec::get();
+    let built = &rsort::spec::SPEC;
+    assert_eq!(built.name, spec.cli.name);
+    assert_eq!(built.about, spec.cli.about);
+    assert_eq!(built.long_about, spec.cli.long_about.as_deref());
+    assert_eq!(built.after_long_help, spec.root_after_help());
+    assert_eq!(built.help_flags, spec.cli.help_flags);
+    assert_eq!(built.version_flags, spec.cli.version_flags);
+    assert_eq!(built.error_exit_code, spec.cli.error_exit_code);
+    assert_eq!(built.json, spec.kit.json);
+    let help: Vec<(&str, &str)> = spec
+        .flags
+        .iter()
+        .map(|f| (f.id.as_str(), f.help.as_str()))
+        .chain(spec.args.iter().map(|a| (a.id.as_str(), a.help.as_str())))
+        .collect();
+    assert_eq!(built.help, help);
+    assert_eq!(built.commands.len(), spec.commands.len());
+    let schema: serde_json::Value = serde_json::from_str(rsort::spec::SCHEMA).unwrap();
+    assert_eq!(schema, spec.schema_document(env!("CARGO_PKG_VERSION")));
+}
+
+// The cli.toml model itself.
+
+#[test]
+fn validate_reports_problems() {
+    let spec = Spec::parse(
+        r#"
+        schema_version = 2
+        [cli]
+        name = "x"
+        about = " "
+        error_exit_code = 9
+        [[exit_code]]
+        code = 0
+        name = "zero"
+        description = "out of range"
+        [[exit_code]]
+        code = 7
+        name = "a"
+        description = "first"
+        [[exit_code]]
+        code = 7
+        name = "b"
+        description = "second"
+        [[arg]]
+        id = "file"
+        help = "mixed with commands"
+        [[case]]
+        name = "c"
+        stdout = "x"
+        stdout_file = "x.out"
+        exit_code = 99
+        [[case]]
+        name = "c"
+        [[flag]]
+        id = "f"
+        long = "f"
+        kind = "switch"
+        value_name = "V"
+        help = ""
+        [[command]]
+        path = "a b"
+        about = ""
+        mutates = true
+        exit_codes = [99]
+        [[command.arg]]
+        id = "x"
+        help = ""
+        [[command]]
+        path = "a b"
+        about = "again"
+        "#,
+    )
+    .unwrap();
+    let problems = spec.validate().join("\n");
+    for needle in [
+        "schema_version",
+        "cli.about",
+        "exit code 7 declared twice",
+        "must be in 1..=125",
+        "cannot be mixed",
+        "error_exit_code 9",
+        "case `c` declared twice",
+        "both stdout and stdout_file",
+        "undeclared exit code 99",
+        "declared twice",
+        "empty about",
+        "no parent entry `a`",
+        "--dry-run",
+        "arg `x`",
+        "empty help",
+        "takes no value",
+    ] {
+        assert!(
+            problems.contains(needle),
+            "missing `{needle}` in:\n{problems}"
+        );
+    }
+}
+
+#[test]
+fn unknown_fields_are_rejected() {
+    let err =
+        Spec::parse("schema_version = 1\n[cli]\nname='x'\nabout='y'\ntypo = 1\n").unwrap_err();
+    assert!(err.to_string().contains("typo"));
+}
+
+#[test]
+fn exit_codes_are_sorted_and_include_builtins() {
+    let codes: Vec<i32> = Spec::get()
+        .all_exit_codes()
+        .iter()
+        .map(|c| c.code)
+        .collect();
+    let mut sorted = codes.clone();
+    sorted.sort();
+    assert_eq!(codes, sorted);
+    assert!(codes.contains(&0) && codes.contains(&2) && codes.contains(&130));
+}
+
+#[test]
+fn root_help_mentions_schema_only_when_there_is_a_schema_command() {
+    let spec = Spec::parse("schema_version = 1\n[cli]\nname = \"x\"\nabout = \"y\"\n").unwrap();
+    assert!(!spec.root_after_help().contains("schema"));
+    assert!(spec.root_after_help().starts_with("Exit codes:"));
+    let commands = "[[command]]\npath = \"schema\"\nabout = \"z\"\n";
+    let spec = Spec::parse(&format!(
+        "schema_version = 1\n[cli]\nname = \"x\"\nabout = \"y\"\n{commands}"
+    ))
+    .unwrap();
+    assert!(spec.root_after_help().contains("Run `x schema`"));
+}
+
+#[test]
+fn rendered_rust_escapes_text() {
+    let spec = Spec::parse(
+        "schema_version = 1\n[cli]\nname = \"x\"\nabout = 'say \"hi\" \\ é'\n\
+         [[command]]\npath = \"go\"\nabout = \"g\"\n\
+         [[command.examples]]\ncmd = \"x go\"\ndescription = \"run\"\n",
+    )
+    .unwrap();
+    let rust = spec.to_rust("1.2.3");
+    assert!(rust.contains(r#"about: "say \"hi\" \\ é""#), "{rust}");
+    assert!(rust.contains(r#"path: "go""#), "{rust}");
+    assert!(rust.contains("Examples:"), "{rust}");
 }

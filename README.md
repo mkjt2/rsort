@@ -86,5 +86,6 @@ cargo install just cargo-llvm-cov           # Linux (install zig and gh from you
 | Upgrade toolchain and dependencies | `just upgrade` |
 
 The interface is defined in [`cli.toml`](cli.toml): commands, flags, help text,
-exit codes and JSON output schemas. `tests/conformance.rs` fails if the code
-drifts from it.
+exit codes and JSON output schemas. `build.rs` turns it into Rust at build
+time, so the binary doesn't parse it, and `tests/conformance.rs` fails if the
+code drifts from it.

@@ -5,7 +5,7 @@
 //! `error_style = "plain"`); with `--json`, errors are written to stderr as
 //! `{"error": {"code", "exit_code", "message", "hint"}}`.
 
-use crate::spec::{ErrorStyle, Spec};
+use crate::spec::{ErrorStyle, SPEC};
 use miette::Diagnostic;
 use serde::Serialize;
 
@@ -49,7 +49,7 @@ impl AppError {
             .iter()
             .find(|(name, _)| *name == code)
             .map(|(_, n)| *n)
-            .unwrap_or(Spec::get().cli.error_exit_code)
+            .unwrap_or(SPEC.error_exit_code)
     }
 
     /// The `help(...)` hint, if any.
@@ -86,10 +86,9 @@ impl<'a> JsonError<'a> {
 
 /// Render an error for humans in the style `cli.toml` asks for.
 pub fn render_human(err: &AppError, color: bool) -> String {
-    let spec = Spec::get();
-    match spec.cli.error_style {
+    match SPEC.error_style {
         ErrorStyle::Rich => render_rich(err, color),
-        ErrorStyle::Plain => render_plain(err, &spec.cli.name),
+        ErrorStyle::Plain => render_plain(err, SPEC.name),
     }
 }
 
@@ -134,7 +133,7 @@ mod tests {
         assert_eq!(AppError::Usage("u".into()).exit_code(), 2);
         assert_eq!(
             AppError::Other("o".into()).exit_code(),
-            Spec::get().cli.error_exit_code
+            SPEC.error_exit_code
         );
     }
 

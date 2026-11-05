@@ -1,14 +1,14 @@
 //! Typed view of `cli.toml`, the source of truth for this CLI's interface.
 //!
-//! The file is embedded at compile time. It provides all user-facing text
-//! (see [`crate::cli::command`]) and backs the `schema` command. The
-//! conformance test checks that the clap definitions match it structurally.
+//! This file is not part of the binary. `build.rs` compiles it to turn
+//! `cli.toml` into static Rust (`Spec::to_rust`), which `src/spec/mod.rs`
+//! includes, and the tests compile it to check the code against `cli.toml`
+//! (`tests/conformance.rs`, `tests/cases.rs`). So nothing parses TOML at run
+//! time.
+#![allow(dead_code)] // build.rs and each test use a different part
 
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
-
-/// Raw contents of `cli.toml`, embedded at build time.
-pub const CLI_TOML: &str = include_str!("../cli.toml");
+use serde_json::{Value, json};
 
 /// Exit codes every generated CLI uses unless `cli.toml` redefines them.
 /// `error` moves to `[cli].error_exit_code` when that is set.
@@ -93,20 +93,6 @@ pub enum ErrorStyle {
     Rich,
     /// `<name>: <message>`, plus a `hint:` line when there is one.
     Plain,
-}
-
-/// Split declared flags like `["-h", "--help"]` into (short, long).
-pub fn split_flags(flags: &[String]) -> (Option<char>, Option<String>) {
-    let mut short = None;
-    let mut long = None;
-    for f in flags {
-        if let Some(l) = f.strip_prefix("--") {
-            long = Some(l.to_string());
-        } else if let Some(s) = f.strip_prefix('-') {
-            short = s.chars().next();
-        }
-    }
-    (short, long)
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -328,11 +314,17 @@ impl Spec {
         toml::from_str(text)
     }
 
-    /// The embedded spec. Panics only if `cli.toml` is invalid, which the
-    /// test suite rules out.
+    /// This crate's `cli.toml`, for tests.
+    #[cfg(test)]
     pub fn get() -> &'static Spec {
-        static SPEC: OnceLock<Spec> = OnceLock::new();
-        SPEC.get_or_init(|| Spec::parse(CLI_TOML).expect("embedded cli.toml is valid"))
+        static SPEC: std::sync::OnceLock<Spec> = std::sync::OnceLock::new();
+        SPEC.get_or_init(|| {
+            Spec::parse(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/cli.toml"
+            )))
+            .expect("cli.toml is valid")
+        })
     }
 
     /// Look up a command by its space-separated path.
@@ -494,112 +486,158 @@ fn check_flag(problems: &mut Vec<String>, flag: &Flag, owner: &str) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// Build-time rendering: everything the binary needs from cli.toml, as text.
 
-    #[test]
-    fn embedded_spec_parses_and_validates() {
-        let spec = Spec::get();
-        assert_eq!(spec.cli.name, env!("CARGO_PKG_NAME"));
-        assert_eq!(spec.validate(), Vec::<String>::new());
-    }
-
-    #[test]
-    fn validate_reports_problems() {
-        let spec = Spec::parse(
-            r#"
-            schema_version = 2
-            [cli]
-            name = "x"
-            about = " "
-            error_exit_code = 9
-            [[exit_code]]
-            code = 0
-            name = "zero"
-            description = "out of range"
-            [[exit_code]]
-            code = 7
-            name = "a"
-            description = "first"
-            [[exit_code]]
-            code = 7
-            name = "b"
-            description = "second"
-            [[arg]]
-            id = "file"
-            help = "mixed with commands"
-            [[case]]
-            name = "c"
-            stdout = "x"
-            stdout_file = "x.out"
-            exit_code = 99
-            [[case]]
-            name = "c"
-            [[flag]]
-            id = "f"
-            long = "f"
-            kind = "switch"
-            value_name = "V"
-            help = ""
-            [[command]]
-            path = "a b"
-            about = ""
-            mutates = true
-            exit_codes = [99]
-            [[command.arg]]
-            id = "x"
-            help = ""
-            [[command]]
-            path = "a b"
-            about = "again"
-            "#,
-        )
-        .unwrap();
-        let problems = spec.validate().join("\n");
-        for needle in [
-            "schema_version",
-            "cli.about",
-            "exit code 7 declared twice",
-            "must be in 1..=125",
-            "cannot be mixed",
-            "error_exit_code 9",
-            "case `c` declared twice",
-            "both stdout and stdout_file",
-            "undeclared exit code 99",
-            "declared twice",
-            "empty about",
-            "no parent entry `a`",
-            "undeclared exit code 99",
-            "--dry-run",
-            "arg `x`",
-            "empty help",
-            "takes no value",
-        ] {
-            assert!(
-                problems.contains(needle),
-                "missing `{needle}` in:\n{problems}"
-            );
+impl Spec {
+    /// The `--help` footer: examples, exit codes and a pointer to `schema`.
+    pub fn root_after_help(&self) -> String {
+        let mut out = String::new();
+        if !self.cli.examples.is_empty() {
+            out.push_str(&examples_section(&self.cli.examples));
+            out.push_str("\n\n");
         }
+        out.push_str("Exit codes:\n");
+        for code in self.all_exit_codes() {
+            out.push_str(&format!("  {:>3}  {}\n", code.code, code.description));
+        }
+        if self.command("schema").is_some() {
+            out.push_str(&format!(
+                "\nRun `{} schema` for the full machine-readable interface.",
+                self.cli.name
+            ));
+        }
+        out.trim_end().to_string()
     }
 
-    #[test]
-    fn unknown_fields_are_rejected() {
-        let err =
-            Spec::parse("schema_version = 1\n[cli]\nname='x'\nabout='y'\ntypo = 1\n").unwrap_err();
-        assert!(err.to_string().contains("typo"));
-    }
-
-    #[test]
-    fn exit_codes_are_sorted_and_include_builtins() {
-        let codes: Vec<i32> = Spec::get()
-            .all_exit_codes()
+    /// The machine-readable interface printed by `--generate schema`.
+    pub fn schema_document(&self, version: &str) -> Value {
+        let commands: Vec<Value> = self
+            .commands
             .iter()
-            .map(|c| c.code)
+            .map(|c| {
+                let mut v = serde_json::to_value(c).expect("command serializes");
+                v["usage"] = json!(format!("{} {}", self.cli.name, c.path));
+                v
+            })
             .collect();
-        let mut sorted = codes.clone();
-        sorted.sort();
-        assert_eq!(codes, sorted);
-        assert!(codes.contains(&0) && codes.contains(&2) && codes.contains(&130));
+        json!({
+            "schema_version": self.schema_version,
+            "name": self.cli.name,
+            "version": version,
+            "about": self.cli.about,
+            "shape": if self.is_single() { "single" } else { "subcommands" },
+            "global_flags": self.flags,
+            "args": self.args,
+            "commands": commands,
+            "exit_codes": self.all_exit_codes(),
+            "env": self.env,
+            "config_keys": self.config_keys,
+            "error_schema": {
+                "description": "With --json, failures write one line to stderr with this shape",
+                "type": "object",
+                "required": ["error"],
+                "properties": {
+                    "error": {
+                        "type": "object",
+                        "required": ["code", "exit_code", "message"],
+                        "properties": {
+                            "code": { "type": "string" },
+                            "exit_code": { "type": "integer" },
+                            "message": { "type": "string" },
+                            "hint": { "type": "string" }
+                        }
+                    }
+                }
+            }
+        })
     }
+
+    /// Rust source defining `SPEC` and `SCHEMA` for `src/spec/mod.rs`.
+    pub fn to_rust(&self, version: &str) -> String {
+        let root_help: Vec<(&str, &str)> = self
+            .flags
+            .iter()
+            .map(|f| (f.id.as_str(), f.help.as_str()))
+            .chain(self.args.iter().map(|a| (a.id.as_str(), a.help.as_str())))
+            .collect();
+        let commands: Vec<String> = self
+            .commands
+            .iter()
+            .map(|c| {
+                let help: Vec<(&str, &str)> = c
+                    .args
+                    .iter()
+                    .map(|a| (a.id.as_str(), a.help.as_str()))
+                    .chain(c.flags.iter().map(|f| (f.id.as_str(), f.help.as_str())))
+                    .collect();
+                let after_help = (!c.examples.is_empty()).then(|| examples_section(&c.examples));
+                format!(
+                    "CommandText {{ path: {:?}, about: {:?}, long_about: {}, after_help: {}, help: {} }}",
+                    c.path,
+                    c.about,
+                    option(c.long_about.as_deref()),
+                    option(after_help.as_deref()),
+                    pairs(&help),
+                )
+            })
+            .collect();
+        let style = match self.cli.error_style {
+            ErrorStyle::Rich => "Rich",
+            ErrorStyle::Plain => "Plain",
+        };
+        let schema = self.schema_document(version).to_string();
+        format!(
+            "// Generated by build.rs from cli.toml. Do not edit.\n\
+             pub static SPEC: Interface = Interface {{\n\
+             \x20   name: {name:?},\n\
+             \x20   about: {about:?},\n\
+             \x20   long_about: {long_about},\n\
+             \x20   after_long_help: {after:?},\n\
+             \x20   help_flags: {help_flags},\n\
+             \x20   version_flags: {version_flags},\n\
+             \x20   help: {help},\n\
+             \x20   commands: &[{commands}],\n\
+             \x20   error_style: ErrorStyle::{style},\n\
+             \x20   error_exit_code: {code},\n\
+             \x20   json: {json},\n\
+             }};\n\
+             pub static SCHEMA: &str = {schema:?};\n",
+            name = self.cli.name,
+            about = self.cli.about,
+            long_about = option(self.cli.long_about.as_deref()),
+            after = self.root_after_help(),
+            help_flags = strs(&self.cli.help_flags),
+            version_flags = strs(&self.cli.version_flags),
+            help = pairs(&root_help),
+            commands = commands.join(", "),
+            code = self.cli.error_exit_code,
+            json = self.kit.json,
+        )
+    }
+}
+
+/// An `Examples:` help section.
+pub fn examples_section(examples: &[Example]) -> String {
+    let mut out = String::from("Examples:\n");
+    for ex in examples {
+        out.push_str(&format!("  # {}\n  $ {}\n", ex.description, ex.cmd));
+    }
+    out.trim_end().to_string()
+}
+
+fn option(s: Option<&str>) -> String {
+    s.map_or_else(|| "None".to_string(), |s| format!("Some({s:?})"))
+}
+
+fn strs(items: &[String]) -> String {
+    let items: Vec<String> = items.iter().map(|s| format!("{s:?}")).collect();
+    format!("&[{}]", items.join(", "))
+}
+
+fn pairs(items: &[(&str, &str)]) -> String {
+    let items: Vec<String> = items
+        .iter()
+        .map(|(a, b)| format!("({a:?}, {b:?})"))
+        .collect();
+    format!("&[{}]", items.join(", "))
 }
