@@ -231,19 +231,23 @@ fn advance(line: &[u8], mut i: usize, n: usize, utf8: bool) -> usize {
     i
 }
 
+/// A blank byte in the locale (see [`super::ctype`]).
 pub fn is_blank(b: u8) -> bool {
-    b == b' ' || b == b'\t'
+    super::ctype::is_blank(b)
 }
 
 pub fn skip_blanks(line: &[u8], mut i: usize) -> usize {
-    while i < line.len() && is_blank(line[i]) {
-        i += 1;
+    while i < line.len() {
+        match super::ctype::blank_len(line, i) {
+            0 => break,
+            n => i += n,
+        }
     }
     i
 }
 
 fn skip_non_blanks(line: &[u8], mut i: usize) -> usize {
-    while i < line.len() && !is_blank(line[i]) {
+    while i < line.len() && super::ctype::blank_len(line, i) == 0 {
         i += 1;
     }
     i

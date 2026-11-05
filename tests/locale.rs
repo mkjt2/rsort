@@ -315,6 +315,21 @@ mod oracle {
     }
 
     #[test]
+    fn gnusort_compatible_blanks_makes_all_white_space_blank() {
+        let input = "a\u{a0}2\nb\u{2003}1\nc\x0b3\nd 0\n\x0c9\n";
+        for locale in ["C", "en_US.UTF-8"] {
+            for env in [
+                &[("LANG", locale)][..],
+                &[("LANG", locale), ("GNUSORT_COMPATIBLE_BLANKS", "1")],
+            ] {
+                for args in [&["-k2"][..], &["-k2n"], &["-b"], &["-d"], &["-n"]] {
+                    same_as_sort(env, args, input.as_bytes());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn locales_named_without_an_encoding_are_utf8() {
         // macOS "en_US" or "ja_JP" are UTF-8 though nl_langinfo(CODESET) is
         // empty; "sr_RS.UTF-8@latin" reports "UTF-8@latin".

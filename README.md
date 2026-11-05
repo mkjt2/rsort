@@ -50,7 +50,8 @@ variable, then `LANG`:
   and `-f` use the locale's character classes in any encoding.
 - `LC_NUMERIC`: `-n`/`-h`/`-g` use the locale's decimal point, thousands
   separator and minus sign (`1,000` = 1000 in en_US; in sv_FI `−5` is negative
-  and `-5` is not a number). `GNUSORT_NUMERIC_COMPATIBILITY` works as in sort.
+  and `-5` is not a number). `GNUSORT_NUMERIC_COMPATIBILITY` works as in sort, as does
+  `GNUSORT_COMPATIBLE_BLANKS` (every white-space character is a blank).
 - `LC_TIME`: `-M` matches the locale's month abbreviations.
 
 Set `LC_ALL=C` for byte order and English months.
@@ -71,7 +72,6 @@ collation: text always compares in byte order there, and numbers use C rules.
   zh_CN.GB18030, zh_TW.Big5, ko_KR.eucKR, ...) are handled as single bytes:
   `-k` character offsets and `-d`/`-i`/`-f` go by byte there. Collation still
   uses the locale.
-- `GNUSORT_COMPATIBLE_BLANKS` (blanks are all white space) is not supported.
 - In kk_KZ.PT154, whose collation macOS can't use (strcoll fails), the order
   differs.
 - `-R` uses a different hash, so a given `--random-source` gives a different

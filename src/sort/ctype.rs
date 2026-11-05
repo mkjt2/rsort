@@ -5,6 +5,10 @@
 //! classes (`isalnum`, `isprint`, `toupper`); UTF-8 uses the wide ones
 //! (`iswalnum`, `iswprint`, `towupper`).
 //!
+//! Blanks (field separators, `-b`) are `isblank`, or `isspace` with
+//! GNUSORT_COMPATIBLE_BLANKS set; in UTF-8 `iswblank`/`iswspace`, so
+//! U+00A0 can be a blank there.
+//!
 //! The tables are read once, after [`crate::sort::collate::Locale`] has set
 //! the locale; before that (in unit tests) they are the C locale's.
 
@@ -17,10 +21,15 @@ unsafe extern "C" {
     fn iswalnum(wc: u32) -> libc::c_int;
     fn iswprint(wc: u32) -> libc::c_int;
     fn iswspace(wc: u32) -> libc::c_int;
+    fn iswblank(wc: u32) -> libc::c_int;
     fn towupper(wc: u32) -> u32;
 }
 
 struct Tables {
+    utf8: bool,
+    /// Blanks are white space (GNUSORT_COMPATIBLE_BLANKS).
+    spaces: bool,
+    blank: [bool; 256],
     alnum: [bool; 256],
     print: [bool; 256],
     space: [bool; 256],
@@ -31,17 +40,21 @@ struct Tables {
 
 static TABLES: OnceLock<Tables> = OnceLock::new();
 
-/// Read the current locale's tables (the first call wins).
-pub fn init(utf8: bool) {
-    TABLES.get_or_init(|| read(utf8));
+/// Read the current locale's tables (the first call wins); `spaces` makes
+/// every white-space character a blank.
+pub fn init(utf8: bool, spaces: bool) {
+    TABLES.get_or_init(|| read(utf8, spaces));
 }
 
 fn tables() -> &'static Tables {
-    TABLES.get_or_init(|| read(false))
+    TABLES.get_or_init(|| read(false, false))
 }
 
-fn read(utf8: bool) -> Tables {
+fn read(utf8: bool, spaces: bool) -> Tables {
     let mut t = Tables {
+        utf8,
+        spaces,
+        blank: [false; 256],
         alnum: [false; 256],
         print: [false; 256],
         space: [false; 256],
@@ -55,6 +68,11 @@ fn read(utf8: bool) -> Tables {
             t.alnum[usize::from(b)] = libc::isalnum(c) != 0;
             t.print[usize::from(b)] = libc::isprint(c) != 0;
             t.space[usize::from(b)] = libc::isspace(c) != 0;
+            t.blank[usize::from(b)] = if spaces {
+                libc::isspace(c) != 0
+            } else {
+                libc::isblank(c) != 0
+            };
             t.upper[usize::from(b)] = u8::try_from(libc::toupper(c)).unwrap_or(b);
         }
     }
@@ -86,6 +104,45 @@ fn read(utf8: bool) -> Tables {
         };
     }
     t
+}
+
+/// The length of the blank at `s[i]`, 0 if none: one byte, or in UTF-8
+/// one character.
+pub fn blank_len(s: &[u8], i: usize) -> usize {
+    let t = tables();
+    let b = s[i];
+    if b < 0x80 || !t.utf8 {
+        return usize::from(t.blank[usize::from(b)]);
+    }
+    match first_char(&s[i..]) {
+        Some(c) if is_wblank(c) => c.len_utf8(),
+        _ => 0,
+    }
+}
+
+/// A blank byte (`isblank`, or `isspace` with GNUSORT_COMPATIBLE_BLANKS).
+pub fn is_blank(b: u8) -> bool {
+    tables().blank[usize::from(b)]
+}
+
+/// A blank character in UTF-8.
+pub fn is_wblank(c: char) -> bool {
+    // SAFETY: iswblank and iswspace accept any wide character value.
+    if tables().spaces {
+        unsafe { iswspace(u32::from(c)) != 0 }
+    } else {
+        unsafe { iswblank(u32::from(c)) != 0 }
+    }
+}
+
+/// The UTF-8 character `s` starts with, if any.
+pub fn first_char(s: &[u8]) -> Option<char> {
+    let head = &s[..s.len().min(4)];
+    let valid = match std::str::from_utf8(head) {
+        Ok(t) => t,
+        Err(e) => std::str::from_utf8(&head[..e.valid_up_to()]).ok()?,
+    };
+    valid.chars().next()
 }
 
 /// `isalnum` in the locale.
@@ -153,6 +210,12 @@ mod tests {
         assert!(is_walnum('a') && !is_walnum('-'));
         assert!(is_wprint('a') && !is_wprint('\u{7}'));
         assert!(is_space(b'\x0b') && !is_space(b'a') && is_wspace('\t') && !is_wspace('a'));
+        assert!(is_blank(b' ') && is_blank(b'\t') && !is_blank(b'\n') && !is_blank(0xa0));
+        assert!(is_wblank(' ') && !is_wblank('\n'));
+        assert_eq!(blank_len(b"x \t", 1), 1);
+        assert_eq!(blank_len(b"x \t", 0), 0);
+        assert_eq!(first_char("\u{e9}x".as_bytes()), Some('\u{e9}'));
+        assert_eq!(first_char(b"\xc3"), None);
         assert_eq!(upper('a'), 'A');
     }
 }

@@ -164,6 +164,7 @@ impl Locale {
     /// does: if any of them names a locale that doesn't exist, all stay C.
     pub fn from_env(env: &dyn Fn(&str) -> Option<String>) -> Locale {
         let gnu_numbers = env("GNUSORT_NUMERIC_COMPATIBILITY").is_some();
+        let gnu_blanks = env("GNUSORT_COMPATIBLE_BLANKS").is_some();
         // SAFETY: setlocale is called with valid NUL-terminated strings
         // before any other thread exists or compares text.
         let set = |category, name: &str| {
@@ -177,7 +178,7 @@ impl Locale {
             for (category, _) in CATEGORIES {
                 set(category, "C");
             }
-            super::ctype::init(false);
+            super::ctype::init(false, gnu_blanks);
             return Locale {
                 gnu_numbers,
                 ..Locale::default()
@@ -197,7 +198,7 @@ impl Locale {
         } else {
             Collator::Locale { utf8 }
         };
-        super::ctype::init(utf8);
+        super::ctype::init(utf8, gnu_blanks);
         Locale {
             collator,
             numbers: number_format(utf8),

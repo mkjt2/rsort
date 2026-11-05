@@ -214,7 +214,7 @@ pub fn transform_into(raw: &[u8], order: &Order, utf8: bool, out: &mut Vec<u8>) 
 fn transform_chars(text: &str, order: &Order, fold: bool, out: &mut Vec<u8>) {
     let keep = |c: char| {
         if order.dictionary {
-            c == ' ' || c == '\t' || ctype::is_walnum(c)
+            ctype::is_wblank(c) || ctype::is_walnum(c)
         } else if order.nonprinting {
             ctype::is_wprint(c)
         } else {
@@ -418,7 +418,7 @@ impl General {
     pub fn parse(s: &[u8], cx: &Context) -> General {
         let mut i = skip_blanks(s, 0);
         let printable = if cx.utf8 {
-            first_char(&s[i..]).is_some_and(ctype::is_wprint)
+            ctype::first_char(&s[i..]).is_some_and(ctype::is_wprint)
         } else {
             s.get(i).is_some_and(|&b| ctype::is_print(b))
         };
@@ -429,7 +429,7 @@ impl General {
         // like U+00A0 included.
         loop {
             if cx.utf8 {
-                match first_char(&s[i..]) {
+                match ctype::first_char(&s[i..]) {
                     Some(c) if ctype::is_wspace(c) => i += c.len_utf8(),
                     _ => break,
                 }
@@ -472,16 +472,6 @@ impl General {
         };
         General::Number(if negative { -value } else { value })
     }
-}
-
-/// The UTF-8 character `s` starts with, if any.
-fn first_char(s: &[u8]) -> Option<char> {
-    let head = &s[..s.len().min(4)];
-    let valid = match std::str::from_utf8(head) {
-        Ok(t) => t,
-        Err(e) => std::str::from_utf8(&head[..e.valid_up_to()]).ok()?,
-    };
-    valid.chars().next()
 }
 
 /// Length of `digits[.digits][e[+-]digits]` with at least one mantissa digit.

@@ -160,6 +160,10 @@ name = "LANG"
 description = "Fallback locale for every category without LC_ALL or its own variable"
 
 [[env]]
+name = "GNUSORT_COMPATIBLE_BLANKS"
+description = "When set, every white-space character (not just space and tab) separates fields and counts as a blank"
+
+[[env]]
 name = "GNUSORT_NUMERIC_COMPATIBILITY"
 description = "When set, a -t equal to the decimal point, thousands separator or minus sign still counts in numbers"
 
