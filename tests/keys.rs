@@ -332,3 +332,25 @@ fn dictionary_order_wins_over_ignore_nonprinting() {
     // With -d and -i the tab is kept as a blank (found by fuzzing).
     assert_eq!(sorted(&["-d", "-i"], "0x1A\n\te-B\n"), "\te-B\n0x1A\n");
 }
+
+#[test]
+fn a_separator_that_is_the_decimal_point_stops_n_and_h_reading_fractions() {
+    // As in sort: -n and -h then see 1.5 and 1.4 as 1; -g still reads them.
+    let input = "1.5\n1.4\n2.0K\n1.9K\n";
+    assert_eq!(
+        sorted(&["-s", "-n", "-t", "."], input),
+        "1.5\n1.4\n1.9K\n2.0K\n"
+    );
+    assert_eq!(
+        sorted(&["-s", "-h", "-t", "."], input),
+        "1.5\n1.4\n1.9K\n2.0K\n"
+    );
+    assert_eq!(
+        sorted(&["-s", "-g", "-t", "."], input),
+        "1.4\n1.5\n1.9K\n2.0K\n"
+    );
+    assert_eq!(
+        sorted(&["-s", "-n", "-t", ":"], input),
+        "1.4\n1.5\n1.9K\n2.0K\n"
+    );
+}

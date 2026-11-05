@@ -30,6 +30,10 @@ pub fn run(ctx: &mut Ctx, cli: &Cli, locale: Locale) -> Result<(), AppError> {
     if sorter.separator.is_some() && sorter.separator == sorter.numbers.thousands {
         sorter.numbers.thousands = None;
     }
+    // Likewise -n and -h stop reading fractions at a -t decimal point.
+    if sorter.separator == Some(sorter.numbers.decimal) {
+        sorter.numbers.integers_only = true;
+    }
     let sep = if cli.zero_terminated { b'\0' } else { b'\n' };
 
     let data = inputs

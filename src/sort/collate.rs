@@ -30,6 +30,9 @@ pub fn locale_name(env: &dyn Fn(&str) -> Option<String>) -> Option<String> {
 pub struct NumberFormat {
     pub decimal: u8,
     pub thousands: Option<u8>,
+    /// -n and -h read no fraction: sort ignores the decimal point there
+    /// when `-t` is the decimal point (-g still uses it).
+    pub integers_only: bool,
 }
 
 impl Default for NumberFormat {
@@ -37,6 +40,7 @@ impl Default for NumberFormat {
         NumberFormat {
             decimal: b'.',
             thousands: None,
+            integers_only: false,
         }
     }
 }
@@ -99,6 +103,7 @@ fn number_format() -> NumberFormat {
     NumberFormat {
         decimal: single_byte(decimal).unwrap_or(b'.'),
         thousands: single_byte(thousands),
+        integers_only: false,
     }
 }
 

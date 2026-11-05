@@ -270,6 +270,8 @@ impl Decimal {
     /// point) in the integer part; returns the value and the index just
     /// after it. Anything else is zero.
     pub fn parse(s: &[u8], fmt: &NumberFormat) -> (Decimal, usize) {
+        let point = (!fmt.integers_only).then_some(fmt.decimal);
+        let is_point = |c: Option<&u8>| point.is_some_and(|p| c == Some(&p));
         let mut i = skip_blanks(s, 0);
         let negative = s.get(i) == Some(&b'-');
         if negative {
@@ -282,13 +284,13 @@ impl Decimal {
                 Some(&t)
                     if Some(t) == fmt.thousands
                         && s.get(i + 1)
-                            .is_some_and(|&n| n.is_ascii_digit() || n == fmt.decimal) => {}
+                            .is_some_and(|n| n.is_ascii_digit() || is_point(Some(n))) => {}
                 _ => break,
             }
             i += 1;
         }
         let mut frac: &[u8] = &[];
-        if s.get(i) == Some(&fmt.decimal) {
+        if is_point(s.get(i)) {
             let f_start = i + 1;
             let mut j = f_start;
             while j < s.len() && s[j].is_ascii_digit() {
@@ -691,14 +693,17 @@ mod tests {
     const C: NumberFormat = NumberFormat {
         decimal: b'.',
         thousands: None,
+        integers_only: false,
     };
     const US: NumberFormat = NumberFormat {
         decimal: b'.',
         thousands: Some(b','),
+        integers_only: false,
     };
     const DE: NumberFormat = NumberFormat {
         decimal: b',',
         thousands: Some(b'.'),
+        integers_only: false,
     };
 
     fn dec(s: &str) -> Decimal {
@@ -733,6 +738,12 @@ mod tests {
         let de = |s: &str| Decimal::parse(s.as_bytes(), &DE).0;
         assert_eq!(de("1.234,5"), dec("1234.5"));
         assert_eq!(de("1,5"), dec("1.5"));
+        let whole = NumberFormat {
+            integers_only: true,
+            ..US
+        };
+        assert_eq!(Decimal::parse(b"1,000.5", &whole), (dec("1000"), 5));
+        assert_eq!(Decimal::parse(b"1,.5", &whole).0, dec("1"));
     }
 
     #[test]
