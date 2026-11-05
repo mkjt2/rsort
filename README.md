@@ -100,6 +100,7 @@ cargo install just cargo-llvm-cov           # Linux (install zig and gh from you
 | Accept changed `--help` snapshots | `just snapshots` |
 | Benchmark against the system sort (`--quick`, `--only WORD`, `--help`) | `just bench` |
 | Compare output with the system sort over sort's own test matrix (`--quick`, `--big`, `--help`) | `just compat` |
+| Fuzz against the system sort: keys, numbers, blanks, merge, options in 12 locales (`-n`, `--seed`, `--target`, `--help`) | `just fuzz` |
 | Build release archives | `just dist` |
 | Cut a release (describe it under `[Unreleased]` in CHANGELOG.md first) | `just release 1.2.0` |
 | Upgrade toolchain and dependencies | `just upgrade` |

@@ -48,6 +48,11 @@ compat *args:
     cargo build --locked --release
     scripts/compat.py {{ args }}
 
+# Differential fuzzing against the system sort (`just fuzz --help`)
+fuzz *args:
+    cargo build --locked --release
+    scripts/fuzz.py {{ args }}
+
 # Verify Linux musl release binaries are fully static (skipped without zig)
 static-check:
     scripts/static-check.sh
