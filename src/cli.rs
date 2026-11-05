@@ -6,10 +6,18 @@
 //! `tests/conformance.rs` checks these definitions against `cli.toml`.
 
 use crate::spec::{Interface, SPEC, split_flags};
+use clap::builder::TypedValueParser;
 use clap::{ArgAction, Args, CommandFactory, Parser, ValueEnum};
 
 #[derive(Debug, Parser)]
-#[command(version, propagate_version = true, disable_help_subcommand = true)]
+// Like sort (getopt): a repeated option takes its last value, and an
+// option's value may start with '-' (`-S -r` gives -S the value "-r").
+#[command(
+    version,
+    propagate_version = true,
+    disable_help_subcommand = true,
+    args_override_self = true
+)]
 pub struct Cli {
     #[command(flatten)]
     pub global: GlobalArgs,
@@ -34,7 +42,7 @@ pub struct Cli {
     #[arg(short, long)]
     pub merge: bool,
 
-    #[arg(short, long, value_name = "FILE")]
+    #[arg(short, long, value_name = "FILE", allow_hyphen_values = true)]
     pub output: Option<std::path::PathBuf>,
 
     #[arg(short, long)]
@@ -73,40 +81,46 @@ pub struct Cli {
     #[arg(short = 'V', long, conflicts_with_all = ["numeric_sort", "general_numeric_sort", "human_numeric_sort", "month_sort", "random_sort"])]
     pub version_sort: bool,
 
-    #[arg(long, value_name = "TYPE", value_parser = ["general-numeric", "human-numeric", "month", "numeric", "random"])]
+    #[arg(long, value_name = "TYPE", value_parser = ["general-numeric", "human-numeric", "month", "numeric", "random"], allow_hyphen_values = true)]
     pub sort: Option<String>,
 
     #[arg(short, long)]
     pub reverse: bool,
 
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", allow_hyphen_values = true)]
     pub random_source: Option<std::path::PathBuf>,
 
     #[arg(short, long, value_name = "POS1[,POS2]", allow_hyphen_values = true)]
     pub key: Vec<String>,
 
-    #[arg(short = 't', long, value_name = "CHAR")]
-    pub field_separator: Option<std::ffi::OsString>,
+    #[arg(
+        short = 't',
+        long,
+        value_name = "CHAR",
+        allow_hyphen_values = true,
+        value_parser = clap::builder::OsStringValueParser::new().try_map(separator)
+    )]
+    pub field_separator: Option<u8>,
 
     #[arg(short, long)]
     pub zero_terminated: bool,
 
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", allow_hyphen_values = true)]
     pub files0_from: Option<std::path::PathBuf>,
 
-    #[arg(short = 'S', long, value_name = "SIZE")]
+    #[arg(short = 'S', long, value_name = "SIZE", allow_hyphen_values = true)]
     pub buffer_size: Option<String>,
 
-    #[arg(short = 'T', long, value_name = "DIR")]
+    #[arg(short = 'T', long, value_name = "DIR", allow_hyphen_values = true)]
     pub temporary_directory: Option<std::path::PathBuf>,
 
-    #[arg(long, value_name = "N")]
+    #[arg(long, value_name = "N", allow_hyphen_values = true)]
     pub parallel: Option<String>,
 
-    #[arg(long, value_name = "N")]
+    #[arg(long, value_name = "N", allow_hyphen_values = true)]
     pub batch_size: Option<String>,
 
-    #[arg(long, value_name = "PROGRAM")]
+    #[arg(long, value_name = "PROGRAM", allow_hyphen_values = true)]
     pub compress_program: Option<String>,
 
     #[arg(long)]
@@ -123,6 +137,25 @@ pub struct Cli {
 
     #[arg(long)]
     pub mmap: bool,
+}
+
+/// `-t CHAR` as sort reads it: while more than one byte is left it must
+/// start with a backslash, which is dropped, and a `0` right after a dropped
+/// backslash is NUL; then the first byte (NUL when empty). So `\t` is `t`
+/// and `\\` is a backslash. Like sort, every `-t` given is checked.
+fn separator(arg: std::ffi::OsString) -> Result<u8, String> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut s = arg.as_bytes();
+    while s.len() > 1 {
+        if s[0] != b'\\' {
+            return Err("the field separator must be one character".into());
+        }
+        s = &s[1..];
+        if s[0] == b'0' {
+            return Ok(0);
+        }
+    }
+    Ok(s.first().copied().unwrap_or(0))
 }
 
 #[derive(Debug, Args)]

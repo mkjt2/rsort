@@ -298,7 +298,7 @@ fn sorter(cli: &Cli) -> Result<Sorter, AppError> {
     };
     Ok(Sorter {
         keys,
-        separator: separator(cli.field_separator.as_deref())?,
+        separator: cli.field_separator,
         seed: seed(cli.random_source.as_deref())?,
         reverse: cli.reverse,
         unique: cli.unique,
@@ -346,31 +346,6 @@ fn global_order(cli: &Cli) -> Result<Order, AppError> {
         })?;
     }
     Ok(order)
-}
-
-/// `-t CHAR` as sort reads it: while more than one byte is left it must
-/// start with a backslash, which is dropped, and a `0` right after a dropped
-/// backslash is NUL; then the first byte (NUL when empty). So `\t` is `t`
-/// and `\\` is a backslash.
-fn separator(arg: Option<&std::ffi::OsStr>) -> Result<Option<u8>, AppError> {
-    use std::os::unix::ffi::OsStrExt;
-    let Some(arg) = arg else {
-        return Ok(None);
-    };
-    let mut s = arg.as_bytes();
-    while s.len() > 1 {
-        if s[0] != b'\\' {
-            return Err(AppError::Usage(format!(
-                "-t {}: the field separator must be one character",
-                arg.to_string_lossy()
-            )));
-        }
-        s = &s[1..];
-        if s[0] == b'0' {
-            return Ok(Some(0));
-        }
-    }
-    Ok(Some(s.first().copied().unwrap_or(0)))
 }
 
 /// The `-R` hash seed: from `--random-source` contents, or random.

@@ -347,13 +347,16 @@ fn invalid_keys_are_usage_errors() {
 
 #[test]
 fn invalid_separators_are_usage_errors() {
+    usage_error(&["-t", "x\\"], "the field separator must be one character");
+    usage_error(&["-t", "ab"], "the field separator must be one character");
+    // Every -t is checked, as in sort, though the last one wins.
     usage_error(
-        &["-t", "x\\"],
-        "-t x\\: the field separator must be one character",
+        &["-t", "ab", "-t", ":"],
+        "the field separator must be one character",
     );
-    usage_error(
-        &["-t", "ab"],
-        "-t ab: the field separator must be one character",
+    assert_eq!(
+        sorted(&["-t", "x", "-t", ":", "-k2"], "a:2\nb:1\n"),
+        "b:1\na:2\n"
     );
 }
 
