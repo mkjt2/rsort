@@ -86,7 +86,7 @@ pub struct Cli {
     pub key: Vec<String>,
 
     #[arg(short = 't', long, value_name = "CHAR")]
-    pub field_separator: Option<String>,
+    pub field_separator: Option<std::ffi::OsString>,
 
     #[arg(short, long)]
     pub zero_terminated: bool,

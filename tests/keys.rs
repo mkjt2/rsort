@@ -283,11 +283,25 @@ fn field_separator_makes_every_char_a_delimiter() {
 }
 
 #[test]
-fn field_separator_escapes_for_tab_and_nul() {
+fn field_separator_escapes_drop_backslashes() {
+    // As in sort, a backslash is dropped: `\t` is the letter t (not a tab).
     assert_eq!(
-        sorted(&["-t", "\\t", "-k2"], "b\tz\na\ty\n"),
-        "a\ty\nb\tz\n"
+        sorted(&["-t", "\\t", "-k2"], "xtb\ta\nytaz\tb\n"),
+        "ytaz\tb\nxtb\ta\n"
     );
+    assert_eq!(sorted(&["-t", "\\x", "-k2"], "axb\nbxa\n"), "bxa\naxb\n");
+    assert_eq!(
+        sorted(&["-t", "\\\\", "-k2"], "a\\b\nb\\a\n"),
+        "b\\a\na\\b\n"
+    );
+    // An empty -t, \0 and \\0 are NUL.
+    for t in ["", "\\0", "\\\\0", "\\0x"] {
+        assert_eq!(
+            sorted(&["-t", t, "-k2"], "a\0b\nb\0a\n"),
+            "b\0a\na\0b\n",
+            "{t:?}"
+        );
+    }
     assert_eq!(
         sorted(&["-z", "-t", "\\0", "-k2"], "b\0z\0"),
         "b\0z\0",
@@ -333,7 +347,10 @@ fn invalid_keys_are_usage_errors() {
 
 #[test]
 fn invalid_separators_are_usage_errors() {
-    usage_error(&["-t", ""], "-t: the field separator must be one character");
+    usage_error(
+        &["-t", "x\\"],
+        "-t x\\: the field separator must be one character",
+    );
     usage_error(
         &["-t", "ab"],
         "-t ab: the field separator must be one character",

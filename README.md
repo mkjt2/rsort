@@ -30,6 +30,10 @@ rsort --help                         # every flag, with examples and exit codes
 are `--help` and `--version` only. `rsort --generate man|schema|complete-<shell>`
 prints a man page, the interface as JSON, or shell completions.
 
+`-t` takes one byte. As in sort, a backslash before it is dropped, so
+`-t '\t'` means the letter `t`: write `-t $'\t'` for a tab, and `-t '\0'`
+for NUL.
+
 The obsolete `+POS1 [-POS2]` keys work as in sort: fields and characters
 count from 0, so `+1 -2` is `-k2.1,2.0`. As in sort, they are recognized
 anywhere before `--`.

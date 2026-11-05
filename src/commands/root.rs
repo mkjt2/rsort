@@ -28,6 +28,13 @@ pub fn run(ctx: &mut Ctx, cli: &Cli, locale: Locale) -> Result<(), AppError> {
         utf8: locale.utf8,
         ..sorter(cli)?
     };
+    // sort takes -t with btowc, which has no character for a lone byte from
+    // 0x80 in UTF-8.
+    if locale.utf8 && sorter.separator.is_some_and(|b| b >= 0x80) {
+        return Err(AppError::Usage(
+            "-t: the field separator is not a character in this locale".into(),
+        ));
+    }
     // As in sort, a -t equal to the decimal point, thousands separator or
     // minus sign is only a field separator for -n and -h, unless
     // GNUSORT_NUMERIC_COMPATIBILITY is set.
@@ -341,26 +348,29 @@ fn global_order(cli: &Cli) -> Result<Order, AppError> {
     Ok(order)
 }
 
-/// `-t CHAR`: one byte, or the escapes `\0` (NUL) and `\t` (tab).
-fn separator(arg: Option<&str>) -> Result<Option<u8>, AppError> {
-    let Some(s) = arg else {
+/// `-t CHAR` as sort reads it: while more than one byte is left it must
+/// start with a backslash, which is dropped, and a `0` right after a dropped
+/// backslash is NUL; then the first byte (NUL when empty). So `\t` is `t`
+/// and `\\` is a backslash.
+fn separator(arg: Option<&std::ffi::OsStr>) -> Result<Option<u8>, AppError> {
+    use std::os::unix::ffi::OsStrExt;
+    let Some(arg) = arg else {
         return Ok(None);
     };
-    match s.as_bytes() {
-        [b] => Ok(Some(*b)),
-        b"\\0" => Ok(Some(b'\0')),
-        b"\\t" => Ok(Some(b'\t')),
-        _ => {
-            let flag = if s.is_empty() {
-                "-t".to_string()
-            } else {
-                format!("-t {s}")
-            };
-            Err(AppError::Usage(format!(
-                "{flag}: the field separator must be one character"
-            )))
+    let mut s = arg.as_bytes();
+    while s.len() > 1 {
+        if s[0] != b'\\' {
+            return Err(AppError::Usage(format!(
+                "-t {}: the field separator must be one character",
+                arg.to_string_lossy()
+            )));
+        }
+        s = &s[1..];
+        if s[0] == b'0' {
+            return Ok(Some(0));
         }
     }
+    Ok(Some(s.first().copied().unwrap_or(0)))
 }
 
 /// The `-R` hash seed: from `--random-source` contents, or random.

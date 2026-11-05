@@ -53,6 +53,11 @@ omits the name.
 - --version prints rsort's own version, not 2.3-Apple.
 - -C also has a long form, --check-silent (cli-maker requires a long name).
 
+-t is read as sort reads it: while more than one byte is left it must start with a \
+backslash, which is dropped (a 0 right after it is NUL); then the first byte, NUL if \
+none. So -t '\\t' is the letter t, not a tab (use $'\\t'), -t '' and -t '\\0' are \
+NUL, and in a UTF-8 locale a byte from 0x80 is an error.
+
 Legacy +POS1 [-POS2] keys are rewritten to -k before options are parsed, as \
 sort's fix_obsolete_keys does: +F[.C][OPTS] becomes -k(F+1).(C+1)OPTS, and a \
 following -F[.C][OPTS] adds the end (,F.0, or ,(F+1).C with a character). \
