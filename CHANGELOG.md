@@ -6,6 +6,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-05
+
 ### Added
 - The obsolete `+POS1 [-POS2]` key syntax, as in sort.
 - Every locale category is read as sort reads it (`LC_ALL`, then the
