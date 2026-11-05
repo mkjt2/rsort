@@ -64,7 +64,7 @@ pub fn translate(args: Vec<OsString>) -> Result<Vec<OsString>, String> {
             break;
         }
         let start = match arg.to_str().and_then(|s| s.strip_prefix('+')) {
-            Some(rest) if i > 0 && !rest.is_empty() => parse(rest),
+            Some(rest) if i > 0 => parse(rest),
             _ => None,
         };
         let Some(start) = start else {
@@ -73,13 +73,9 @@ pub fn translate(args: Vec<OsString>) -> Result<Vec<OsString>, String> {
         };
         let start = start?;
         let first = format!("-k{}.{}{}", start.field + 1, start.char + 1, start.opts);
-        let end = iter.peek().and_then(|(_, next)| {
-            let rest = next.to_str()?.strip_prefix('-')?;
-            if rest.is_empty() {
-                return None;
-            }
-            parse(rest)
-        });
+        let end = iter
+            .peek()
+            .and_then(|(_, next)| parse(next.to_str()?.strip_prefix('-')?));
         match end {
             Some(end) => {
                 let end = end?;

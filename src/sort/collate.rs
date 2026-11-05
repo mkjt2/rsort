@@ -77,23 +77,23 @@ impl Symbol {
     /// as mbtowc reads it; `None` when there is none.
     pub fn first(s: &[u8], utf8: bool) -> Option<Symbol> {
         let n = if utf8 {
-            let head = &s[..s.len().min(4)];
-            let valid = match std::str::from_utf8(head) {
-                Ok(t) => t,
-                Err(e) => std::str::from_utf8(&head[..e.valid_up_to()]).ok()?,
-            };
-            valid.chars().next()?.len_utf8()
+            super::ctype::first_char(s)?.len_utf8()
         } else {
-            usize::from(!s.is_empty())
+            s.len().min(1)
         };
-        if n == 0 || s[0] == 0 {
+        Symbol::from_bytes(&s[..n])
+    }
+
+    /// `b` as one symbol: 1 to 4 bytes, not starting with NUL.
+    fn from_bytes(b: &[u8]) -> Option<Symbol> {
+        if !(1..=4).contains(&b.len()) || b[0] == 0 {
             return None;
         }
         let mut bytes = [0; 4];
-        bytes[..n].copy_from_slice(&s[..n]);
+        bytes[..b.len()].copy_from_slice(b);
         Some(Symbol {
             bytes,
-            len: n as u8,
+            len: b.len() as u8,
         })
     }
 
@@ -242,17 +242,7 @@ fn number_format(utf8: bool) -> NumberFormat {
         thousands: Symbol::first(&thousands, utf8),
         minus: Symbol::first(&minus, utf8).or(default.minus),
         // strtod matches the whole string; longer than 4 bytes never occurs.
-        decimal: match decimal.len() {
-            1..=4 => {
-                let mut bytes = [0; 4];
-                bytes[..decimal.len()].copy_from_slice(&decimal);
-                Symbol {
-                    bytes,
-                    len: decimal.len() as u8,
-                }
-            }
-            _ => default.decimal,
-        },
+        decimal: Symbol::from_bytes(&decimal).unwrap_or(default.decimal),
     }
 }
 
@@ -333,18 +323,6 @@ thread_local! {
     static BUFFERS: RefCell<(Vec<u8>, Vec<u8>)> = const { RefCell::new((Vec::new(), Vec::new())) };
 }
 
-/// Append the strxfrm of `out[start..end]` (up to its first NUL) to `out`
-/// and return the appended range. Comparing these bytes orders keys as
-/// strcoll does, so each key is collated once instead of per comparison.
-/// `None` when strxfrm failed: macOS then copies the input unchanged (for
-/// example for a precomposed `Å`) although strcoll still collates it.
-pub fn xfrm_from(out: &mut Vec<u8>, start: usize, end: usize) -> Option<(usize, usize)> {
-    BUFFERS.with_borrow_mut(|(src, _)| {
-        load_c_string(src, &out[start..end]);
-        xfrm_into(src, out)
-    })
-}
-
 /// Whether strxfrm keys may stand in for strcoll on `key`. macOS strxfrm
 /// disagrees with strcoll on tabs in every UTF-8 locale tried, on bytes
 /// from 0x80 in single-byte ones (en_US.ISO8859-15), and in kk_KZ.PT154 even
@@ -399,7 +377,11 @@ fn xfrm_agrees() -> bool {
     true
 }
 
-/// Like [`xfrm_from`] for a key that is not in `out`.
+/// Append the strxfrm of `key` (up to its first NUL) to `out` and return
+/// the appended range. Comparing these bytes orders keys as strcoll does, so
+/// each key is collated once instead of per comparison. `None` when strxfrm
+/// failed: macOS then copies the input unchanged (for example for a
+/// precomposed `Å`) although strcoll still collates it.
 pub fn xfrm(key: &[u8], out: &mut Vec<u8>) -> Option<(usize, usize)> {
     BUFFERS.with_borrow_mut(|(src, _)| {
         load_c_string(src, key);
@@ -449,11 +431,8 @@ fn xfrm_into(src: &[u8], out: &mut Vec<u8>) -> Option<(usize, usize)> {
 /// strcoll on NUL-free byte strings, reusing buffers for the terminators.
 fn strcoll(a: &[u8], b: &[u8]) -> Ordering {
     BUFFERS.with_borrow_mut(|(x, y)| {
-        for (buf, s) in [(&mut *x, a), (&mut *y, b)] {
-            buf.clear();
-            buf.extend_from_slice(s);
-            buf.push(0);
-        }
+        load_c_string(x, a);
+        load_c_string(y, b);
         // SAFETY: both buffers are NUL-terminated and contain no other NUL.
         let r = unsafe { libc::strcoll(x.as_ptr().cast(), y.as_ptr().cast()) };
         r.cmp(&0)
@@ -538,7 +517,7 @@ mod tests {
     fn xfrm_treats_an_unchanged_copy_as_failure() {
         // The test process runs in the C locale, where strxfrm copies.
         let mut out = b"ab\0c".to_vec();
-        assert_eq!(xfrm_from(&mut out, 0, 4), None);
+        assert_eq!(xfrm(b"ab", &mut out), None);
         assert_eq!(xfrm(&[b'x'; 100], &mut out), None);
         assert_eq!(out, b"ab\0c", "a failed key leaves nothing behind");
     }

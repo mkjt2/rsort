@@ -7,11 +7,11 @@ pub mod key;
 pub mod obsolete;
 pub mod value;
 
-use collate::{Collator, NumberFormat};
+use collate::Collator;
 use key::KeyDef;
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use value::{Bits, Summary};
+use value::{Bits, Context, Summary};
 
 /// How lines are compared.
 #[derive(Debug, Clone, Default)]
@@ -20,20 +20,14 @@ pub struct Sorter {
     pub keys: Vec<KeyDef>,
     /// `-t`: the field separator, or runs of blanks when `None`.
     pub separator: Option<u8>,
-    /// Seed for `-R` hashes.
-    pub seed: u64,
     /// Reverse the whole-line last-resort comparison (global `-r`).
     pub reverse: bool,
     /// `-u`: drop lines whose keys equal the previous line's.
     pub unique: bool,
     /// `-s`: no last-resort comparison.
     pub stable: bool,
-    /// How text compares (bytes or the locale).
-    pub collator: Collator,
-    /// LC_CTYPE is UTF-8: `-k` offsets and `-d`/`-f`/`-i` go by character.
-    pub utf8: bool,
-    /// The locale's decimal point and thousands separator.
-    pub numbers: NumberFormat,
+    /// The locale and `-R` seed that key comparisons depend on.
+    pub cx: Context,
 }
 
 /// Keys beyond this many have no summary and are always compared in full.
@@ -62,9 +56,6 @@ const EXACT: u32 = 3;
 #[derive(Debug, Default)]
 pub struct Keys {
     extra: Vec<[u64; 2]>,
-    /// The only key is the whole line as plain text: equal keys mean equal
-    /// lines, so there is no last-resort comparison.
-    plain: bool,
 }
 
 thread_local! {
@@ -85,7 +76,6 @@ impl Sorter {
     pub fn keys(&self, lines: usize) -> Keys {
         Keys {
             extra: Vec::with_capacity(lines.saturating_mul(self.further())),
-            plain: self.plain(),
         }
     }
 
@@ -98,37 +88,23 @@ impl Sorter {
         matches!(self.keys.as_slice(), [k] if k.is_plain_whole_line())
     }
 
-    fn context(&self) -> value::Context {
-        value::Context {
-            seed: self.seed,
-            utf8: self.utf8,
-            numbers: self.numbers,
-            collator: self.collator,
-        }
-    }
-
-    /// Run `f` on key `k` of `line`, rewritten by -d/-f/-i if it asks;
+    /// Run `f` on key `k` of `line`, rewritten by -d/-f/-i/-M if it asks;
     /// `slot` picks one of two buffers so two keys can be held at once.
     fn with_key<T>(&self, k: &KeyDef, line: &[u8], slot: usize, f: impl FnOnce(&[u8]) -> T) -> T {
-        let utf8 = self.utf8;
-        let (begin, end) = k.range(line, self.separator, utf8);
-        let raw = &line[begin..end.max(begin)];
-        let o = &k.order;
-        // -M matches uppercased month names, so it uppercases like -f.
-        if !(o.fold || o.dictionary || o.nonprinting || o.mode == key::Mode::Month) {
+        let raw = k.extract(line, self.separator, self.cx.utf8);
+        if !k.order.rewrites() {
             return f(raw);
         }
         REWRITTEN.with(|bufs| {
             let mut buf = bufs[slot].borrow_mut();
             buf.clear();
-            value::transform_into(raw, o, utf8, &mut buf);
+            value::transform_into(raw, &k.order, self.cx.utf8, &mut buf);
             f(&buf)
         })
     }
 
     /// Summarize a line's keys; `None` past 2^32 records with several keys.
     pub fn record<'a>(&self, keys: &mut Keys, line: &'a [u8]) -> Option<Record<'a>> {
-        let cx = self.context();
         let id = match self.further() {
             0 => 0,
             n => u32::try_from(keys.extra.len() / n).ok()?,
@@ -141,7 +117,9 @@ impl Sorter {
             flags: 0,
         };
         for (i, k) in self.keys.iter().take(SUMMARIZED).enumerate() {
-            let summary = self.with_key(k, line, 0, |key| value::summarize(key, k.order.mode, &cx));
+            let summary = self.with_key(k, line, 0, |key| {
+                value::summarize(key, k.order.mode, &self.cx)
+            });
             let (flag, bits) = match summary {
                 Summary::Ordered { bits, exact } => {
                     let bits = if k.order.reverse { !bits } else { bits };
@@ -183,10 +161,9 @@ impl Sorter {
         prefixes: Option<(usize, usize)>,
     ) -> Ordering {
         let k = &self.keys[i];
-        let cx = self.context();
         let ord = self.with_key(k, a, 0, |x| {
             self.with_key(k, b, 1, |y| {
-                value::compare(x, y, k.order.mode, &cx, prefixes)
+                value::compare(x, y, k.order.mode, &self.cx, prefixes)
             })
         });
         if k.order.reverse { ord.reverse() } else { ord }
@@ -224,7 +201,7 @@ impl Sorter {
     }
 
     fn last_resort(&self, a: &[u8], b: &[u8]) -> Ordering {
-        let ord = self.collator.compare(a, b);
+        let ord = self.cx.collator.compare(a, b);
         if self.reverse { ord.reverse() } else { ord }
     }
 
@@ -237,7 +214,7 @@ impl Sorter {
     /// Full comparison: keys, then the whole-line last resort unless `-s`/`-u`.
     pub fn compare(&self, keys: &Keys, a: &Record, b: &Record) -> Ordering {
         let ord = self.compare_keys(keys, a, b);
-        if ord != Ordering::Equal || keys.plain || self.stable || self.unique {
+        if ord != Ordering::Equal || !self.needs_last_resort() {
             return ord;
         }
         self.last_resort(a.line, b.line)
@@ -258,8 +235,8 @@ impl Sorter {
         // In byte order, ties are identical lines (the last resort, or -u on
         // whole lines), so stability is unobservable. A locale can collate
         // different lines the same; sort keeps those in input order.
-        let ties_differ = !matches!(self.collator, Collator::Bytes);
-        if self.stable || (self.unique && !keys.plain) || ties_differ {
+        let ties_differ = !matches!(self.cx.collator, Collator::Bytes);
+        if self.stable || (self.unique && !self.plain()) || ties_differ {
             records.sort_by(cmp);
         } else {
             records.sort_unstable_by(cmp);

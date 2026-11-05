@@ -14,30 +14,28 @@ pub enum Mode {
     Random,
 }
 
+/// Each mode's option letter (`-n`, `-g`, ...); `t` names text in messages.
+const LETTERS: [(Mode, char); 7] = [
+    (Mode::Text, 't'),
+    (Mode::Numeric, 'n'),
+    (Mode::General, 'g'),
+    (Mode::Human, 'h'),
+    (Mode::Month, 'M'),
+    (Mode::Version, 'V'),
+    (Mode::Random, 'R'),
+];
+
 impl Mode {
-    /// The option letter for this mode (`-n`, `-g`, ...).
+    /// The option letter for this mode.
     pub fn letter(self) -> char {
-        match self {
-            Mode::Text => 't',
-            Mode::Numeric => 'n',
-            Mode::General => 'g',
-            Mode::Human => 'h',
-            Mode::Month => 'M',
-            Mode::Version => 'V',
-            Mode::Random => 'R',
-        }
+        LETTERS
+            .iter()
+            .find(|(m, _)| *m == self)
+            .map_or('t', |&(_, c)| c)
     }
 
     fn from_letter(c: char) -> Option<Mode> {
-        Some(match c {
-            'n' => Mode::Numeric,
-            'g' => Mode::General,
-            'h' => Mode::Human,
-            'M' => Mode::Month,
-            'V' => Mode::Version,
-            'R' => Mode::Random,
-            _ => return None,
-        })
+        LETTERS[1..].iter().find(|&&(_, l)| l == c).map(|&(m, _)| m)
     }
 }
 
@@ -63,6 +61,17 @@ impl Order {
         }
         self.mode = mode;
         Ok(())
+    }
+
+    /// Whether keys are uppercased: -f, or -M, which matches uppercased
+    /// month names.
+    pub fn folds(&self) -> bool {
+        self.fold || self.mode == Mode::Month
+    }
+
+    /// Whether keys are rewritten before they are compared (-d, -f, -i, -M).
+    pub fn rewrites(&self) -> bool {
+        self.folds() || self.dictionary || self.nonprinting
     }
 }
 
@@ -105,7 +114,7 @@ impl KeyDef {
             && !self.start.blanks
             && self.end.is_none()
             && o.mode == Mode::Text
-            && !(o.fold || o.dictionary || o.nonprinting)
+            && !o.rewrites()
     }
 
     /// Parse `F[.C][OPTS][,F[.C][OPTS]]`. A key with no option letters takes
@@ -144,21 +153,28 @@ impl KeyDef {
 
     /// Byte range of the key; `end < begin` means an empty key. Character
     /// offsets count UTF-8 characters when `utf8`, bytes otherwise.
-    pub fn range(&self, line: &[u8], sep: Option<u8>, utf8: bool) -> (usize, usize) {
-        let mut begin = field_start(line, self.start.field, sep);
-        if self.start.blanks {
-            begin = skip_blanks(line, begin);
-        }
+    fn range(&self, line: &[u8], sep: Option<u8>, utf8: bool) -> (usize, usize) {
+        let field = field_start(line, 0, self.start.field - 1, sep);
+        let begin = if self.start.blanks {
+            skip_blanks(line, field)
+        } else {
+            field
+        };
         let begin = advance(line, begin, self.start.char - 1, utf8);
         let end = match self.end {
             None => line.len(),
-            Some(pos) if pos.char == 0 => field_end(line, field_start(line, pos.field, sep), sep),
             Some(pos) => {
-                let mut e = field_start(line, pos.field, sep);
-                if pos.blanks {
-                    e = skip_blanks(line, e);
+                // Walk on from the start field unless the end field is before it.
+                let e = match pos.field.checked_sub(self.start.field) {
+                    Some(n) => field_start(line, field, n, sep),
+                    None => field_start(line, 0, pos.field - 1, sep),
+                };
+                if pos.char == 0 {
+                    field_end(line, e, sep)
+                } else {
+                    let e = if pos.blanks { skip_blanks(line, e) } else { e };
+                    advance(line, e, pos.char, utf8)
                 }
-                advance(line, e, pos.char, utf8)
             }
         };
         (begin, end)
@@ -231,11 +247,6 @@ fn advance(line: &[u8], mut i: usize, n: usize, utf8: bool) -> usize {
     i
 }
 
-/// A blank byte in the locale (see [`super::ctype`]).
-pub fn is_blank(b: u8) -> bool {
-    super::ctype::is_blank(b)
-}
-
 pub fn skip_blanks(line: &[u8], mut i: usize) -> usize {
     while i < line.len() {
         match super::ctype::blank_len(line, i) {
@@ -253,11 +264,11 @@ fn skip_non_blanks(line: &[u8], mut i: usize) -> usize {
     i
 }
 
-/// Index where 1-based `field` starts (the line length if there is none).
-/// Without a separator a field includes its leading blanks.
-fn field_start(line: &[u8], field: usize, sep: Option<u8>) -> usize {
-    let mut i = 0;
-    for _ in 1..field {
+/// Where the field `n` fields after the one starting at `i` starts (the line
+/// length if there is none). Without a separator a field includes its
+/// leading blanks.
+fn field_start(line: &[u8], mut i: usize, n: usize, sep: Option<u8>) -> usize {
+    for _ in 0..n {
         if i >= line.len() {
             return line.len();
         }

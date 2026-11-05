@@ -4,6 +4,7 @@ use crate::cli::Cli;
 use crate::error::AppError;
 use crate::sort::collate::Locale;
 use crate::sort::key::{KeyDef, Mode, Order};
+use crate::sort::value::Context;
 use crate::sort::{Record, Sorter};
 use std::cmp::Ordering;
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -27,34 +28,16 @@ pub fn run(ctx: &mut Ctx, cli: &Cli, locale: Locale) -> Result<(), AppError> {
             inputs.len()
         )));
     }
-    let mut sorter = Sorter {
-        collator: locale.collator,
-        numbers: locale.numbers,
-        utf8: locale.utf8,
-        ..sorter(cli)?
-    };
-    // sort takes -t with btowc, which has no character for a lone byte from
-    // 0x80 in UTF-8.
-    if locale.utf8 && sorter.separator.is_some_and(|b| b >= 0x80) {
-        return Err(AppError::Usage(
-            "-t: the field separator is not a character in this locale".into(),
-        ));
-    }
-    // As in sort, a -t equal to the decimal point, thousands separator or
-    // minus sign is only a field separator for -n and -h, unless
-    // GNUSORT_NUMERIC_COMPATIBILITY is set.
-    if let Some(sep) = sorter.separator
-        && !locale.gnu_numbers
-    {
-        sorter.numbers = sorter.numbers.separated_by(sep);
-    }
+    let sorter = sorter(cli, &locale)?;
     let sep = if cli.zero_terminated { b'\0' } else { b'\n' };
 
     if let Some(diagnose) = check {
         return check_input(ctx, &sorter, &inputs[0], sep, diagnose);
     }
     if cli.merge && !output_is_an_input(cli.output.as_deref(), &inputs) {
-        return merge_inputs(ctx, &sorter, &inputs, sep, cli.output.as_deref());
+        // -m streams its inputs.
+        let sources = open_inputs(&mut *ctx.input, &inputs)?;
+        return merge(&mut *ctx.out, &sorter, sources, sep, cli.output.as_deref());
     }
 
     // Sort in memory (or merge, when -o overwrites an input).
@@ -63,11 +46,11 @@ pub fn run(ctx: &mut Ctx, cli: &Cli, locale: Locale) -> Result<(), AppError> {
         .map(|path| read_input(ctx, path))
         .collect::<Result<Vec<_>, _>>()?;
     if cli.merge {
-        let readers = data.iter().map(|d| Box::new(&d[..]) as Box<dyn BufRead>);
-        let mut sources = Vec::new();
-        for (path, reader) in inputs.iter().zip(readers) {
-            sources.push((path.as_path(), reader));
-        }
+        let sources = inputs
+            .iter()
+            .map(PathBuf::as_path)
+            .zip(data.iter().map(|d| Box::new(&d[..]) as Box<dyn BufRead>))
+            .collect();
         return merge(&mut *ctx.out, &sorter, sources, sep, cli.output.as_deref());
     }
     let total = data.iter().map(|d| count_lines(d, sep)).sum();
@@ -208,18 +191,6 @@ fn check_input(
     Ok(())
 }
 
-/// `-m`: stream a merge of the inputs.
-fn merge_inputs(
-    ctx: &mut Ctx,
-    sorter: &Sorter,
-    paths: &[PathBuf],
-    sep: u8,
-    output: Option<&Path>,
-) -> Result<(), AppError> {
-    let sources = open_inputs(&mut *ctx.input, paths)?;
-    merge(&mut *ctx.out, sorter, sources, sep, output)
-}
-
 /// Merge sorted sources line by line; on ties the earlier source wins.
 fn merge(
     stdout: &mut dyn Write,
@@ -288,7 +259,8 @@ fn check_mode(cli: &Cli) -> Option<bool> {
     Some(!cli.check_silent && cli.check.iter().all(|mode| mode == "diagnose-first"))
 }
 
-fn sorter(cli: &Cli) -> Result<Sorter, AppError> {
+/// The comparator for `cli`'s keys and options in `locale`.
+fn sorter(cli: &Cli, locale: &Locale) -> Result<Sorter, AppError> {
     let global = global_order(cli);
     let blanks = cli.ignore_leading_blanks;
     let keys = if cli.key.is_empty() {
@@ -302,14 +274,34 @@ fn sorter(cli: &Cli) -> Result<Sorter, AppError> {
             })
             .collect::<Result<_, _>>()?
     };
+    let seed = seed(cli.random_source.as_deref())?;
+    let separator = cli.field_separator;
+    // sort takes -t with btowc, which has no character for a lone byte from
+    // 0x80 in UTF-8.
+    if locale.utf8 && separator.is_some_and(|b| b >= 0x80) {
+        return Err(AppError::Usage(
+            "-t: the field separator is not a character in this locale".into(),
+        ));
+    }
+    // As in sort, a -t equal to the decimal point, thousands separator or
+    // minus sign is only a field separator for -n and -h, unless
+    // GNUSORT_NUMERIC_COMPATIBILITY is set.
+    let numbers = match separator {
+        Some(sep) if !locale.gnu_numbers => locale.numbers.separated_by(sep),
+        _ => locale.numbers,
+    };
     Ok(Sorter {
         keys,
-        separator: cli.field_separator,
-        seed: seed(cli.random_source.as_deref())?,
+        separator,
         reverse: cli.reverse,
         unique: cli.unique,
         stable: cli.stable,
-        ..Sorter::default()
+        cx: Context {
+            seed,
+            utf8: locale.utf8,
+            numbers,
+            collator: locale.collator,
+        },
     })
 }
 
@@ -386,7 +378,6 @@ fn input_names(ctx: &mut Ctx, cli: &Cli) -> Result<Vec<PathBuf>, AppError> {
     Ok(names.into_iter().map(path_from_bytes).collect())
 }
 
-#[cfg(unix)]
 fn path_from_bytes(bytes: &[u8]) -> PathBuf {
     use std::os::unix::ffi::OsStrExt;
     PathBuf::from(std::ffi::OsStr::from_bytes(bytes))

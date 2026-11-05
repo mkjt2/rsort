@@ -82,17 +82,10 @@ fn read(utf8: bool, spaces: bool) -> Tables {
         let name = unsafe { CStr::from_ptr(libc::nl_langinfo(libc::ABMON_1 + i as libc::nl_item)) };
         let name = name.to_bytes();
         *month = if utf8 {
-            match std::str::from_utf8(name) {
-                Ok(s) => {
-                    let mut out = Vec::new();
-                    for c in s.chars() {
-                        let mut buf = [0u8; 4];
-                        out.extend_from_slice(upper(c).encode_utf8(&mut buf).as_bytes());
-                    }
-                    out
-                }
-                Err(_) => Vec::new(),
-            }
+            std::str::from_utf8(name).map_or_else(
+                |_| Vec::new(),
+                |s| s.chars().map(upper).collect::<String>().into_bytes(),
+            )
         } else {
             // sort uppercases these with toupper on a signed char, which
             // leaves bytes from 0x80 unchanged. Keys are uppercased fully, so

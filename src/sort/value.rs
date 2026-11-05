@@ -5,7 +5,7 @@
 
 use super::collate::{self, Collator, NumberFormat, Symbol};
 use super::ctype;
-use super::key::{Mode, Order, is_blank, skip_blanks};
+use super::key::{Mode, Order, skip_blanks};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::hash::Hasher;
@@ -31,7 +31,7 @@ pub enum Summary {
     /// sorts before key b. Equal summaries mean equal keys only if `exact`.
     Ordered { bits: Bits, exact: bool },
     /// Not ordered, but saves work in [`compare`]: the `-V` version length
-    /// ([`version_prefix`]).
+    /// ([`version_prefix`]), which costs as much to find as to compare.
     Version(usize),
     /// Nothing usable: compare the keys.
     None,
@@ -76,8 +76,8 @@ pub fn summarize(key: &[u8], mode: Mode, cx: &Context) -> Summary {
     }
 }
 
-/// Compare two keys (already rewritten by -d/-f/-i) in `mode`. `prefixes`
-/// are the keys' cached [`Summary::Version`] values, if any.
+/// Compare two keys (already rewritten by -d/-f/-i/-M) in `mode`.
+/// `prefixes` are the keys' cached [`Summary::Version`] values, if any.
 pub fn compare(
     a: &[u8],
     b: &[u8],
@@ -94,19 +94,20 @@ pub fn compare(
         Mode::Random => random_hash(a, cx.seed)
             .cmp(&random_hash(b, cx.seed))
             .then_with(|| text(a, b, cx.collator)),
-        Mode::Version => match prefixes {
-            Some((pa, pb)) => version_cmp_with(a, pa, b, pb),
-            None => version_cmp(a, b),
-        },
+        Mode::Version => {
+            let (pa, pb) = prefixes.unwrap_or_else(|| (version_prefix(a), version_prefix(b)));
+            version_cmp_with(a, pa, b, pb)
+        }
     }
 }
 
 /// Text order: collation (when the locale has one), then bytes.
 fn text(a: &[u8], b: &[u8], collator: Collator) -> Ordering {
-    if a == b {
-        return Ordering::Equal;
+    match collator {
+        Collator::Bytes => a.cmp(b),
+        _ if a == b => Ordering::Equal,
+        _ => collator.compare(a, b),
     }
-    collator.compare(a, b)
 }
 
 fn random_hash(key: &[u8], seed: u64) -> u64 {
@@ -182,35 +183,35 @@ pub fn transform(raw: &[u8], order: &Order, utf8: bool) -> Vec<u8> {
 
 /// [`transform`], appending to `out`.
 pub fn transform_into(raw: &[u8], order: &Order, utf8: bool, out: &mut Vec<u8>) {
-    let fold = order.fold || order.mode == Mode::Month;
-    if utf8 {
-        if let Ok(text) = std::str::from_utf8(raw) {
-            return transform_chars(text, order, fold, out);
-        }
-        let keep = |b: u8| {
-            if order.dictionary {
-                is_blank(b) || b.is_ascii_alphanumeric()
-            } else if order.nonprinting {
-                (0x20..0x7f).contains(&b)
-            } else {
-                true
-            }
-        };
-        let up = |b: u8| if fold { b.to_ascii_uppercase() } else { b };
-        out.extend(raw.iter().filter(|&&b| keep(b)).map(|&b| up(b)));
-        return;
+    let fold = order.folds();
+    if utf8 && let Ok(text) = std::str::from_utf8(raw) {
+        return transform_chars(text, order, fold, out);
     }
+    // By byte: the locale's classes, or ASCII ones for invalid UTF-8.
+    type Classes = (fn(u8) -> bool, fn(u8) -> bool, fn(u8) -> u8);
+    let (alnum, print, upper): Classes = if utf8 {
+        (
+            |b| b.is_ascii_alphanumeric(),
+            |b| (0x20..0x7f).contains(&b),
+            |b| b.to_ascii_uppercase(),
+        )
+    } else {
+        (ctype::is_alnum, ctype::is_print, ctype::to_upper)
+    };
     let keep = |b: u8| {
         if order.dictionary {
-            is_blank(b) || ctype::is_alnum(b)
+            ctype::is_blank(b) || alnum(b)
         } else if order.nonprinting {
-            ctype::is_print(b)
+            print(b)
         } else {
             true
         }
     };
-    let up = |b: u8| if fold { ctype::to_upper(b) } else { b };
-    out.extend(raw.iter().filter(|&&b| keep(b)).map(|&b| up(b)));
+    out.extend(
+        raw.iter()
+            .filter(|&&b| keep(b))
+            .map(|&b| if fold { upper(b) } else { b }),
+    );
 }
 
 fn transform_chars(text: &str, order: &Order, fold: bool, out: &mut Vec<u8>) {
@@ -242,9 +243,58 @@ const MAX_DIGITS: usize = 128;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Number {
     sign: i8,
-    int: Vec<u8>,
-    frac: Vec<u8>,
+    int: Digits,
+    frac: Digits,
     suffix: u8,
+}
+
+/// Up to [`MAX_DIGITS`] ASCII digits, stored inline: parsing a number per
+/// line and two per tie must not allocate.
+#[derive(Clone)]
+struct Digits {
+    buf: [u8; MAX_DIGITS],
+    len: u8,
+}
+
+impl Digits {
+    fn push(&mut self, d: u8) {
+        self.buf[usize::from(self.len)] = d;
+        self.len += 1;
+    }
+
+    fn truncate(&mut self, len: usize) {
+        self.len = self.len.min(len as u8);
+    }
+}
+
+impl Default for Digits {
+    fn default() -> Self {
+        Digits {
+            buf: [0; MAX_DIGITS],
+            len: 0,
+        }
+    }
+}
+
+impl std::ops::Deref for Digits {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.buf[..usize::from(self.len)]
+    }
+}
+
+impl PartialEq for Digits {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl Eq for Digits {}
+
+impl std::fmt::Debug for Digits {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&String::from_utf8_lossy(self))
+    }
 }
 
 impl Number {
@@ -259,7 +309,7 @@ impl Number {
         while s.get(i) == Some(&b'0') {
             i += 1;
         }
-        let mut int = Vec::new();
+        let mut int = Digits::default();
         let mut after_separator = false;
         while int.len() < MAX_DIGITS {
             if digit(i) {
@@ -273,7 +323,7 @@ impl Number {
                 break;
             }
         }
-        let mut frac = Vec::new();
+        let mut frac = Digits::default();
         if let Some(n) = at(fmt.point, i) {
             i += n;
             while digit(i) && frac.len() < MAX_DIGITS {
@@ -310,7 +360,7 @@ impl Number {
     /// overflows to ULLONG_MAX.
     fn hint(&self) -> Option<u64> {
         let mut n: u64 = 0;
-        for &d in &self.int {
+        for &d in self.int.iter() {
             n = n.checked_mul(10)?.checked_add(u64::from(d - b'0'))?;
         }
         (n != u64::MAX).then_some(n)
@@ -323,10 +373,7 @@ impl Number {
     /// separator can leave (`,05` is 5, but after every other 5).
     pub fn compare(&self, other: &Number, suffix: bool) -> Ordering {
         let (a, b) = (self, other);
-        if a.sign == 0 || b.sign == 0 {
-            return a.sign.cmp(&b.sign);
-        }
-        if a.sign != b.sign {
+        if a.sign != b.sign || a.sign == 0 {
             return a.sign.cmp(&b.sign);
         }
         let flip = |o: Ordering| if a.sign < 0 { o.reverse() } else { o };
@@ -342,8 +389,8 @@ impl Number {
             a.int
                 .len()
                 .cmp(&b.int.len())
-                .then_with(|| a.int.cmp(&b.int))
-                .then_with(|| a.frac.cmp(&b.frac)),
+                .then_with(|| a.int[..].cmp(&b.int[..]))
+                .then_with(|| a.frac[..].cmp(&b.frac[..])),
         )
     }
 
@@ -460,9 +507,16 @@ impl General {
             if len == 0 {
                 return General::NotNumber;
             }
-            let text = String::from_utf8_lossy(&rest[..len])
-                .replace(&*String::from_utf8_lossy(decimal.as_bytes()), ".");
-            let v: f64 = text.parse().unwrap_or(0.0);
+            let text = &rest[..len];
+            let v: f64 = if decimal.as_bytes() == b"." {
+                std::str::from_utf8(text).ok().and_then(|t| t.parse().ok())
+            } else {
+                String::from_utf8_lossy(text)
+                    .replace(&*String::from_utf8_lossy(decimal.as_bytes()), ".")
+                    .parse()
+                    .ok()
+            }
+            .unwrap_or(0.0);
             if v.is_infinite() {
                 return if negative {
                     General::NegOverflow
@@ -596,7 +650,7 @@ pub fn version_prefix(s: &[u8]) -> usize {
 }
 
 /// [`version_cmp`] with each side's [`version_prefix`] precomputed.
-pub fn version_cmp_with(a: &[u8], a_len: usize, b: &[u8], b_len: usize) -> Ordering {
+fn version_cmp_with(a: &[u8], a_len: usize, b: &[u8], b_len: usize) -> Ordering {
     let bytes = a.cmp(b);
     if bytes == Ordering::Equal {
         return bytes;
