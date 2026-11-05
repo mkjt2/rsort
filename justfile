@@ -38,6 +38,11 @@ cov-html:
 snapshots:
     INSTA_UPDATE=always cargo test --locked --test help
 
+# Benchmark rsort against the system sort; ASCII report on stdout (`just bench --help`)
+bench *args:
+    cargo build --locked --release
+    scripts/bench.py {{ args }}
+
 # Verify Linux musl release binaries are fully static (skipped without zig)
 static-check:
     scripts/static-check.sh

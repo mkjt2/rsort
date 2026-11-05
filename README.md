@@ -78,6 +78,7 @@ cargo install just cargo-llvm-cov           # Linux (install zig and gh from you
 | Full local CI (fmt, clippy, tests, 90% coverage gate, static check) | `just ci` |
 | Run tests | `just test` |
 | Accept changed `--help` snapshots | `just snapshots` |
+| Benchmark against the system sort (`--quick`, `--only WORD`, `--help`) | `just bench` |
 | Build release archives | `just dist` |
 | Cut a release (describe it under `[Unreleased]` in CHANGELOG.md first) | `just release 1.2.0` |
 | Upgrade toolchain and dependencies | `just upgrade` |
