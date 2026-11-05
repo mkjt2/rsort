@@ -1,28 +1,39 @@
-//! Locale support: text collation (byte order, or strcoll when LC_ALL /
-//! LC_COLLATE / LANG name a non-C locale) and the locale's number format,
-//! as sort uses them.
+//! Locale support, as sort sets it up with `setlocale(LC_ALL, "")`: text
+//! collation (byte order in the C and POSIX locales, strcoll otherwise), the
+//! character set (UTF-8 or single bytes), and the number format.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Collator {
     /// Compare bytes (the C and POSIX locales, or no usable locale).
     #[default]
     Bytes,
-    /// strcoll in the process's LC_COLLATE locale; `utf8` when its
-    /// encoding is UTF-8 (character classes and case folding go by `char`).
+    /// strcoll in the process's LC_COLLATE locale; `utf8` when the
+    /// LC_CTYPE encoding is UTF-8 (lengths then count characters).
     Locale { utf8: bool },
 }
 
-/// The collation locale named by the environment: the first non-empty of
-/// LC_ALL, LC_COLLATE and LANG.
-pub fn locale_name(env: &dyn Fn(&str) -> Option<String>) -> Option<String> {
-    ["LC_ALL", "LC_COLLATE", "LANG"]
+/// The categories `setlocale(LC_ALL, "")` sets, with their variables.
+const CATEGORIES: [(libc::c_int, &str); 6] = [
+    (libc::LC_COLLATE, "LC_COLLATE"),
+    (libc::LC_CTYPE, "LC_CTYPE"),
+    (libc::LC_MONETARY, "LC_MONETARY"),
+    (libc::LC_NUMERIC, "LC_NUMERIC"),
+    (libc::LC_TIME, "LC_TIME"),
+    (libc::LC_MESSAGES, "LC_MESSAGES"),
+];
+
+/// The locale the environment names for a category: the first non-empty
+/// of LC_ALL, the category's own variable and LANG, else C.
+pub fn category_name(env: &dyn Fn(&str) -> Option<String>, var: &str) -> String {
+    ["LC_ALL", var, "LANG"]
         .into_iter()
         .filter_map(env)
         .find(|v| !v.is_empty())
+        .unwrap_or_else(|| "C".into())
 }
 
 /// The decimal point and thousands separator used by -n, -h and -g.
@@ -50,38 +61,61 @@ impl Default for NumberFormat {
 pub struct Locale {
     pub collator: Collator,
     pub numbers: NumberFormat,
+    /// LC_CTYPE is UTF-8: `-k` offsets and `-d`/`-f`/`-i` go by character.
+    pub utf8: bool,
 }
 
 impl Locale {
-    /// Activate `name` for collation, character classes and numbers.
-    /// Unknown locales, C and POSIX give byte order and C number rules.
-    pub fn activate(name: Option<&str>) -> Locale {
-        let Some(name) = name.filter(|n| !matches!(*n, "C" | "POSIX")) else {
-            return Locale::default();
-        };
-        let Ok(c_name) = CString::new(name) else {
-            return Locale::default();
-        };
+    /// Set every category from the environment as `setlocale(LC_ALL, "")`
+    /// does: if any of them names a locale that doesn't exist, all stay C.
+    pub fn from_env(env: &dyn Fn(&str) -> Option<String>) -> Locale {
         // SAFETY: setlocale is called with valid NUL-terminated strings
         // before any other thread exists or compares text.
-        let ok = [libc::LC_COLLATE, libc::LC_CTYPE, libc::LC_NUMERIC]
-            .into_iter()
-            .all(|category| unsafe { !libc::setlocale(category, c_name.as_ptr()).is_null() });
+        let set = |category, name: &str| {
+            CString::new(name)
+                .is_ok_and(|n| unsafe { !libc::setlocale(category, n.as_ptr()).is_null() })
+        };
+        let ok = CATEGORIES
+            .iter()
+            .all(|&(category, var)| set(category, &category_name(env, var)));
         if !ok {
+            for (category, _) in CATEGORIES {
+                set(category, "C");
+            }
+            super::ctype::init(false);
             return Locale::default();
         }
-        let lower = name.to_ascii_lowercase();
+        // SAFETY: nl_langinfo and setlocale(…, NULL) return NUL-terminated
+        // strings that stay valid until the next setlocale; both are copied.
+        let codeset = unsafe { CStr::from_ptr(libc::nl_langinfo(libc::CODESET)) }
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        let utf8 = matches!(codeset.as_str(), "utf-8" | "utf8");
+        let collate = unsafe { libc::setlocale(libc::LC_COLLATE, std::ptr::null()) };
+        let collate = if collate.is_null() {
+            "C".into()
+        } else {
+            unsafe { CStr::from_ptr(collate) }.to_string_lossy()
+        };
+        let collator = if matches!(collate.as_ref(), "C" | "POSIX") {
+            Collator::Bytes
+        } else {
+            Collator::Locale { utf8 }
+        };
+        super::ctype::init(utf8);
         Locale {
-            collator: Collator::Locale {
-                utf8: lower.contains("utf-8") || lower.contains("utf8"),
-            },
-            numbers: number_format(),
+            collator,
+            numbers: number_format(utf8),
+            utf8,
         }
     }
 }
 
-/// The current LC_NUMERIC separators; multi-byte ones are not supported.
-fn number_format() -> NumberFormat {
+/// The current LC_NUMERIC separators, as sort reads them with mbtowc: in a
+/// single-byte locale the first byte (Big5HKSCS's two-byte decimal point
+/// becomes its first byte); in UTF-8 one ASCII character (others are not
+/// supported).
+fn number_format(utf8: bool) -> NumberFormat {
     // SAFETY: localeconv returns a pointer to static data that stays valid
     // until the next setlocale/localeconv call; we copy out of it at once.
     let single_byte = |ptr: *const libc::c_char| {
@@ -91,6 +125,7 @@ fn number_format() -> NumberFormat {
         // SAFETY: localeconv strings are NUL-terminated.
         match unsafe { std::ffi::CStr::from_ptr(ptr) }.to_bytes() {
             [b] => Some(*b),
+            [b, ..] if !utf8 => Some(*b),
             _ => None,
         }
     };
@@ -108,10 +143,6 @@ fn number_format() -> NumberFormat {
 }
 
 impl Collator {
-    pub fn is_utf8(self) -> bool {
-        matches!(self, Collator::Locale { utf8: true })
-    }
-
     /// Compare as sort's `bwscoll` does. In a locale this is strcoll on
     /// each NUL-separated part in turn (a part that ends first sorts first),
     /// then the shorter string (in characters) first. Strings that collate
@@ -292,41 +323,42 @@ mod tests {
     }
 
     #[test]
-    fn locale_precedence() {
-        assert_eq!(locale_name(&env(&[])), None);
-        assert_eq!(locale_name(&env(&[("LANG", "x")])).as_deref(), Some("x"));
+    fn each_category_reads_lc_all_then_its_own_variable_then_lang() {
+        let name = |pairs: &[(&str, &str)]| category_name(&env(pairs), "LC_COLLATE");
+        assert_eq!(name(&[]), "C");
+        assert_eq!(name(&[("LANG", "x")]), "x");
+        assert_eq!(name(&[("LANG", "x"), ("LC_COLLATE", "y")]), "y");
+        assert_eq!(name(&[("LANG", "x"), ("LC_CTYPE", "y")]), "x");
         assert_eq!(
-            locale_name(&env(&[("LANG", "x"), ("LC_COLLATE", "y")])).as_deref(),
-            Some("y")
+            name(&[("LC_ALL", ""), ("LC_COLLATE", "y"), ("LANG", "x")]),
+            "y"
         );
-        assert_eq!(
-            locale_name(&env(&[("LC_ALL", ""), ("LC_COLLATE", "y"), ("LANG", "x")])).as_deref(),
-            Some("y")
-        );
-        assert_eq!(
-            locale_name(&env(&[("LC_ALL", "z"), ("LC_COLLATE", "y")])).as_deref(),
-            Some("z")
-        );
+        assert_eq!(name(&[("LC_ALL", "z"), ("LC_COLLATE", "y")]), "z");
     }
 
     #[test]
     fn c_posix_and_unknown_locales_are_bytes() {
-        for name in [
-            None,
-            Some("C"),
-            Some("POSIX"),
-            Some("no_SUCH.locale"),
-            Some("bad\0name"),
+        for pairs in [
+            &[][..],
+            &[("LANG", "C")],
+            &[("LC_ALL", "POSIX")],
+            &[("LANG", "no_SUCH.locale")],
+            &[("LANG", "bad\0name")],
+            // One unknown category leaves every category C.
+            &[("LANG", "C"), ("LC_MESSAGES", "no_SUCH.locale")],
         ] {
-            assert_eq!(Locale::activate(name), Locale::default(), "{name:?}");
+            assert_eq!(
+                Locale::from_env(&env(pairs)),
+                Locale::default(),
+                "{pairs:?}"
+            );
         }
         assert_eq!(NumberFormat::default().decimal, b'.');
-        assert!(!Collator::Bytes.is_utf8());
         assert_eq!(Collator::Bytes.compare(b"a", b"B"), Ordering::Greater);
     }
 
     #[test]
-    fn locale_compare_breaks_ties_by_bytes_and_skips_invalid_utf8() {
+    fn locale_compare_skips_invalid_utf8() {
         // Byte fallbacks hold whatever locale the process has.
         let c = Collator::Locale { utf8: true };
         assert_eq!(c.compare(b"\xff", b"a"), Ordering::Greater);

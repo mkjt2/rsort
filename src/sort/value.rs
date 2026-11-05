@@ -2,6 +2,7 @@
 //! and the full comparison of two keys for when summaries can't.
 
 use super::collate::{self, Collator, NumberFormat};
+use super::ctype;
 use super::key::{Mode, Order, is_blank, skip_blanks};
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -170,9 +171,10 @@ fn signed_bits(sign: Ordering, field: Bits, width: u32) -> Bits {
 }
 
 /// Apply -d (keep blanks and alphanumerics) or else -i (keep printable),
-/// then -f (fold to uppercase). As in sort, -d wins over -i: with both, a
-/// tab is kept. In a UTF-8 locale valid text is handled by character;
-/// otherwise byte by byte as in the C locale.
+/// then -f (uppercase; -M uppercases too). As in sort, -d wins over -i:
+/// with both, a tab is kept. Classes are the locale's: by character for
+/// valid text in a UTF-8 locale, by byte otherwise (ASCII for invalid
+/// UTF-8).
 pub fn transform(raw: &[u8], order: &Order, utf8: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(raw.len());
     transform_into(raw, order, utf8, &mut out);
@@ -181,44 +183,50 @@ pub fn transform(raw: &[u8], order: &Order, utf8: bool) -> Vec<u8> {
 
 /// [`transform`], appending to `out`.
 pub fn transform_into(raw: &[u8], order: &Order, utf8: bool, out: &mut Vec<u8>) {
-    if utf8 && let Ok(text) = std::str::from_utf8(raw) {
-        return transform_chars(text, order, out);
+    let fold = order.fold || order.mode == Mode::Month;
+    if utf8 {
+        if let Ok(text) = std::str::from_utf8(raw) {
+            return transform_chars(text, order, fold, out);
+        }
+        let keep = |b: u8| {
+            if order.dictionary {
+                is_blank(b) || b.is_ascii_alphanumeric()
+            } else if order.nonprinting {
+                (0x20..0x7f).contains(&b)
+            } else {
+                true
+            }
+        };
+        let up = |b: u8| if fold { b.to_ascii_uppercase() } else { b };
+        out.extend(raw.iter().filter(|&&b| keep(b)).map(|&b| up(b)));
+        return;
     }
     let keep = |b: u8| {
         if order.dictionary {
-            is_blank(b) || b.is_ascii_alphanumeric()
+            is_blank(b) || ctype::is_alnum(b)
         } else if order.nonprinting {
-            (0x20..0x7f).contains(&b)
+            ctype::is_print(b)
         } else {
             true
         }
     };
-    out.extend(raw.iter().filter(|&&b| keep(b)).map(|&b| {
-        if order.fold {
-            b.to_ascii_uppercase()
-        } else {
-            b
-        }
-    }));
+    let up = |b: u8| if fold { ctype::to_upper(b) } else { b };
+    out.extend(raw.iter().filter(|&&b| keep(b)).map(|&b| up(b)));
 }
 
-fn transform_chars(text: &str, order: &Order, out: &mut Vec<u8>) {
+fn transform_chars(text: &str, order: &Order, fold: bool, out: &mut Vec<u8>) {
     let keep = |c: char| {
         if order.dictionary {
-            c == ' ' || c == '\t' || c.is_alphanumeric()
+            c == ' ' || c == '\t' || ctype::is_walnum(c)
         } else if order.nonprinting {
-            !c.is_control()
+            ctype::is_wprint(c)
         } else {
             true
         }
     };
     let mut buf = [0u8; 4];
     for c in text.chars().filter(|&c| keep(c)) {
-        let mut upper = c.to_uppercase();
-        let c = match (order.fold, upper.next(), upper.next()) {
-            (true, Some(u), None) => u,
-            _ => c,
-        };
+        let c = if fold { ctype::upper(c) } else { c };
         out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
     }
 }
@@ -564,20 +572,16 @@ fn parse_hex(s: &[u8], decimal: u8) -> Option<f64> {
 
 // --- -M --------------------------------------------------------------------
 
-/// 1..=12 for a month abbreviation after leading blanks, 0 otherwise.
+/// 1..=12 for a key (already uppercased) that starts with one of the
+/// locale's month abbreviations after leading blanks, 0 otherwise. Like
+/// sort, December is tried first.
 pub fn month(s: &[u8]) -> u8 {
-    const MONTHS: [&[u8]; 12] = [
-        b"JAN", b"FEB", b"MAR", b"APR", b"MAY", b"JUN", b"JUL", b"AUG", b"SEP", b"OCT", b"NOV",
-        b"DEC",
-    ];
     let s = &s[skip_blanks(s, 0)..];
-    if s.len() < 3 {
-        return 0;
-    }
-    MONTHS
-        .iter()
-        .position(|m| s[..3].eq_ignore_ascii_case(m))
-        .map_or(0, |p| p as u8 + 1)
+    let months = ctype::months();
+    (0..12)
+        .rev()
+        .find(|&i| !months[i].is_empty() && s.starts_with(&months[i]))
+        .map_or(0, |i| i as u8 + 1)
 }
 
 // --- -V --------------------------------------------------------------------
@@ -790,10 +794,12 @@ mod tests {
 
     #[test]
     fn months() {
-        assert_eq!(month(b" jan"), 1);
-        assert_eq!(month(b"December"), 12);
-        assert_eq!(month(b"Ja"), 0);
-        assert_eq!(month(b"xyz"), 0);
+        // Keys arrive uppercased; the unit tests run in the C locale.
+        assert_eq!(month(b" JAN"), 1);
+        assert_eq!(month(b"DECEMBER"), 12);
+        assert_eq!(month(b"jan"), 0);
+        assert_eq!(month(b"JA"), 0);
+        assert_eq!(month(b"XYZ"), 0);
     }
 
     #[test]
@@ -836,9 +842,11 @@ mod tests {
             ..Order::default()
         };
         assert_eq!(transform(b"a-b\x01\t c\xe9", &order, false), b"a-b c");
+        // By character in UTF-8, with the C locale's classes here (the
+        // locale tests compare real locales with sort).
         assert_eq!(
-            transform("é\u{1}\tß".as_bytes(), &order, true),
-            "éß".as_bytes()
+            transform("é\u{1}\t~".as_bytes(), &order, true),
+            "~".as_bytes()
         );
         let fold = Order {
             fold: true,
@@ -846,9 +854,14 @@ mod tests {
             ..Order::default()
         };
         assert_eq!(
-            transform("é-ß x".as_bytes(), &fold, true),
-            "Éß X".as_bytes()
+            transform("a-b x".as_bytes(), &fold, true),
+            "AB X".as_bytes()
         );
+        let month = Order {
+            mode: Mode::Month,
+            ..Order::default()
+        };
+        assert_eq!(transform(b"jan", &month, false), b"JAN", "-M uppercases");
         assert_eq!(
             transform(b"\xffa", &fold, true),
             b"A",

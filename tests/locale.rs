@@ -231,3 +231,114 @@ mod macos {
         }
     }
 }
+
+/// Locales other than C and en_US.UTF-8, checked against /usr/bin/sort.
+#[cfg(target_os = "macos")]
+mod oracle {
+    use super::*;
+
+    /// rsort and sort agree on `input` with `env` (LC_ALL etc. cleared).
+    fn same_as_sort(env: &[(&str, &str)], args: &[&str], input: &[u8]) {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = std::process::Command::new("/usr/bin/sort");
+        c.env_remove("LC_ALL")
+            .env_remove("LC_COLLATE")
+            .env_remove("LANG");
+        c.envs(env.iter().copied()).args(args);
+        c.stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+        let mut child = c.spawn().unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        let want = child.wait_with_output().unwrap().stdout;
+        let got = run(dir.path(), env, args, input);
+        assert_eq!(
+            String::from_utf8_lossy(&got),
+            String::from_utf8_lossy(&want),
+            "{env:?} {args:?}"
+        );
+    }
+
+    /// Latin-1-ish and Cyrillic text in UTF-8 and in a single-byte encoding.
+    const LATIN: &str = "\u{e9}t\u{e9}\n\u{c9}T\u{c9}\nzoo\n\u{df}x\nA-b\na b\nAb\n\u{a0}x\n";
+    const CYRILLIC: &str = "\u{44f}\u{43d}\u{432}. 3\n\u{424}\u{415}\u{412}\u{420}. 2\n\u{43c}\u{430}\u{44f} 5\n\u{434}\u{435}\u{43a}. 1\nfoo\n\u{42f}\u{41d}\u{412}\u{410}\u{420}\u{42c}\n";
+
+    fn encode(text: &str, charset: &str) -> Vec<u8> {
+        use std::io::Write;
+        let mut child = std::process::Command::new("iconv")
+            .args(["-f", "UTF-8", "-t", charset])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(text.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap().stdout
+    }
+
+    #[test]
+    fn single_byte_locales_use_their_classes_and_collation() {
+        for (locale, charset, text) in [
+            ("en_US.ISO8859-15", "ISO-8859-15", LATIN),
+            ("ru_RU.KOI8-R", "KOI8-R", CYRILLIC),
+            ("ru_RU.ISO8859-5", "ISO-8859-5", CYRILLIC),
+        ] {
+            let input = encode(text, charset);
+            for args in [
+                &[][..],
+                &["-f"],
+                &["-d"],
+                &["-i"],
+                &["-df"],
+                &["-fu"],
+                &["-M"],
+                &["-k1.2,1.3"],
+            ] {
+                same_as_sort(&[("LANG", locale)], args, &input);
+            }
+        }
+    }
+
+    #[test]
+    fn utf8_classes_and_month_names_follow_the_locale() {
+        for locale in ["en_US.UTF-8", "ru_RU.UTF-8"] {
+            for text in [LATIN, CYRILLIC, "a\u{200b}b\nab\n\u{85}x\nx\n"] {
+                for args in [&[][..], &["-f"], &["-d"], &["-i"], &["-M"], &["-s", "-M"]] {
+                    same_as_sort(&[("LANG", locale)], args, text.as_bytes());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn categories_come_from_their_own_variables() {
+        let text = CYRILLIC.as_bytes();
+        for env in [
+            &[("LANG", "C"), ("LC_CTYPE", "en_US.UTF-8")][..],
+            &[("LANG", "C"), ("LC_COLLATE", "en_US.UTF-8")],
+            &[("LANG", "en_US.UTF-8"), ("LC_TIME", "ru_RU.UTF-8")],
+            &[("LANG", "en_US.UTF-8"), ("LC_MESSAGES", "no_SUCH.locale")],
+        ] {
+            for args in [&[][..], &["-M"], &["-f"], &["-k1.2,1.3"]] {
+                same_as_sort(env, args, text);
+            }
+        }
+    }
+
+    #[test]
+    fn a_multibyte_decimal_point_counts_by_its_first_byte() {
+        // zh_HK.Big5HKSCS is single-byte on macOS, with a two-byte decimal
+        // point: "." is then not one.
+        for args in [&["-n"][..], &["-h"], &["-rn"], &["-s", "-n"]] {
+            same_as_sort(
+                &[("LANG", "zh_HK.Big5HKSCS")],
+                args,
+                b"jan\n.2\n1.5\n0.1\n10\n",
+            );
+        }
+    }
+}

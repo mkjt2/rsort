@@ -69,20 +69,28 @@ Accepted and ignored for script compatibility (in-memory sort, no tuning knobs):
 - --files0-from with FILE operands is a usage error; sort silently ignores the operands.
 - -c with -m is a usage error (exit 2); sort exits 1.
 
-Collation: follow the locale like sort. When LC_ALL / LC_COLLATE / LANG select a \
-non-C locale, compare text keys with libc strcoll (lines containing NUL fall back to \
-byte order for the bytes after it); otherwise compare bytes. On the static musl Linux \
-builds strcoll is byte order, so Linux output is always byte order (documented in the \
-README). Numbers follow the locale too, as in sort: -n and -h accept the locale's \
-decimal point and single-byte thousands separator (en_US: 1,000 = 1000), and -g uses \
-its decimal point. A -t equal to the thousands separator is only a field separator, and \
-a -t equal to the decimal point stops -n and -h reading fractions (not -g), as in sort. \
-Month, version and random comparisons use C rules. Invalid UTF-8 \
-in a UTF-8 locale compares by bytes (sort fails with "Illegal byte sequence"), and \
--k character offsets count characters in UTF-8 locales. Cases pin LC_ALL=C; the build adds a \
-macOS-only test (cfg(target_os = "macos")) that compares `rsort` and `/usr/bin/sort` \
-under LC_ALL=en_US.UTF-8 on mixed-case and punctuation input, because [[case]]s \
-cannot be platform-conditional.
+Locale: set up like sort's setlocale(LC_ALL, ""): each category comes from LC_ALL, \
+its own LC_* variable, then LANG, and if any names a missing locale every category \
+stays C. LC_COLLATE: C and POSIX compare bytes; otherwise text compares like sort's \
+bwscoll: strcoll on each NUL-separated part, then the shorter string (in characters) \
+first, with no byte tie-break, so lines a locale collates the same (macOS gives \
+Cyrillic no weight in en_US.UTF-8) keep their input order. LC_CTYPE: in UTF-8, -k \
+character offsets count characters and -d/-i/-f use iswalnum/iswprint/towupper; in \
+single-byte encodings (every other macOS locale, Big5HKSCS included) they use the \
+byte classes isalnum/isprint/toupper. LC_NUMERIC: -n and -h accept the decimal point \
+and thousands separator, read as sort does with mbtowc (a single-byte locale takes \
+the first byte of a longer one; UTF-8 supports ASCII ones only), and -g uses the \
+decimal point. A -t equal to the thousands separator is only a field separator, and \
+a -t equal to the decimal point stops -n and -h reading fractions (not -g), as in \
+sort. LC_TIME: -M uppercases the key and matches the locale's abbreviated month \
+names (nl_langinfo ABMON_1..12, tried from December down). Like sort, single-byte \
+locales uppercase only the ASCII letters of those names, so Russian names never \
+match in KOI8-R. Invalid UTF-8 in a UTF-8 locale compares by bytes (sort fails with \
+"Illegal byte sequence"). On the static musl Linux builds strcoll is byte order \
+(documented in the README). Cases pin LC_ALL=C; macOS-only tests \
+(cfg(target_os = "macos")) compare `rsort` with `/usr/bin/sort` in other locales, \
+because [[case]]s cannot be platform-conditional, and scripts/compat.py runs sort's \
+own locale matrix.
 
 Name: rsort (no collision; does not shadow /usr/bin/sort). No Homebrew tap."""
 
@@ -117,15 +125,27 @@ description = "Invalid usage, or a file could not be read or written"
 
 [[env]]
 name = "LC_ALL"
-description = "Locale for collation; overrides LC_COLLATE and LANG. Set to C for byte order"
+description = "Locale for everything; overrides the LC_* variables and LANG. Set to C for byte order"
 
 [[env]]
 name = "LC_COLLATE"
 description = "Locale for collation when LC_ALL is unset"
 
 [[env]]
+name = "LC_CTYPE"
+description = "Locale for the character set and classes (-k offsets, -d, -i, -f) when LC_ALL is unset"
+
+[[env]]
+name = "LC_NUMERIC"
+description = "Locale for the decimal point and thousands separator (-n, -h, -g) when LC_ALL is unset"
+
+[[env]]
+name = "LC_TIME"
+description = "Locale for month names (-M) when LC_ALL is unset"
+
+[[env]]
 name = "LANG"
-description = "Fallback locale when LC_ALL and LC_COLLATE are unset"
+description = "Fallback locale for every category without LC_ALL or its own variable"
 
 [[env]]
 name = "RUST_LOG"
@@ -236,7 +256,7 @@ long = "month-sort"
 short = "M"
 kind = "switch"
 conflicts_with = ["numeric_sort", "general_numeric_sort", "human_numeric_sort", "random_sort", "version_sort"]
-help = "Compare as month abbreviations (JAN < ... < DEC); unknown strings sort first"
+help = "Compare as the locale's month abbreviations (JAN < ... < DEC); unknown strings sort first"
 
 [[flag]]
 id = "numeric_sort"

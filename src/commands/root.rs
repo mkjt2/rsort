@@ -25,6 +25,7 @@ pub fn run(ctx: &mut Ctx, cli: &Cli, locale: Locale) -> Result<(), AppError> {
     let mut sorter = Sorter {
         collator: locale.collator,
         numbers: locale.numbers,
+        utf8: locale.utf8,
         ..sorter(cli)?
     };
     // As in sort, a -t that is also the thousands separator is only a field

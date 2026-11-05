@@ -2,6 +2,7 @@
 //! sort, unique and check operations built on it.
 
 pub mod collate;
+pub mod ctype;
 pub mod key;
 pub mod obsolete;
 pub mod value;
@@ -29,6 +30,8 @@ pub struct Sorter {
     pub stable: bool,
     /// How text compares (bytes or the locale).
     pub collator: Collator,
+    /// LC_CTYPE is UTF-8: `-k` offsets and `-d`/`-f`/`-i` go by character.
+    pub utf8: bool,
     /// The locale's decimal point and thousands separator.
     pub numbers: NumberFormat,
 }
@@ -98,7 +101,7 @@ impl Sorter {
     fn context(&self) -> value::Context {
         value::Context {
             seed: self.seed,
-            utf8: self.collator.is_utf8(),
+            utf8: self.utf8,
             numbers: self.numbers,
             collator: self.collator,
         }
@@ -107,11 +110,12 @@ impl Sorter {
     /// Run `f` on key `k` of `line`, rewritten by -d/-f/-i if it asks;
     /// `slot` picks one of two buffers so two keys can be held at once.
     fn with_key<T>(&self, k: &KeyDef, line: &[u8], slot: usize, f: impl FnOnce(&[u8]) -> T) -> T {
-        let utf8 = self.collator.is_utf8();
+        let utf8 = self.utf8;
         let (begin, end) = k.range(line, self.separator, utf8);
         let raw = &line[begin..end.max(begin)];
         let o = &k.order;
-        if !(o.fold || o.dictionary || o.nonprinting) {
+        // -M matches uppercased month names, so it uppercases like -f.
+        if !(o.fold || o.dictionary || o.nonprinting || o.mode == key::Mode::Month) {
             return f(raw);
         }
         REWRITTEN.with(|bufs| {

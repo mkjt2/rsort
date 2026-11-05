@@ -60,7 +60,7 @@ Options:
           Compare numbers with SI suffixes, e.g. 2K < 1M
 
   -M, --month-sort
-          Compare as month abbreviations (JAN < ... < DEC); unknown strings sort first
+          Compare as the locale's month abbreviations (JAN < ... < DEC); unknown strings sort first
 
   -n, --numeric-sort
           Compare by arithmetic value: optional blanks, minus sign, digits and a decimal point

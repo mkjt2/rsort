@@ -36,11 +36,19 @@ anywhere before `--`.
 
 ### Locale
 
-Like sort, rsort follows `LC_ALL`, then `LC_COLLATE`, then `LANG`. In a non-C
-locale, text compares with the locale's collation (`strcoll`), `-d`/`-i`/`-f`
-and `-k` character offsets work by character in UTF-8, and `-n`/`-h`/`-g` use
-the locale's decimal point and thousands separator (`1,000` = 1000 in en_US).
-Set `LC_ALL=C` for byte order.
+Like sort, rsort sets each locale category from `LC_ALL`, then its own
+variable, then `LANG`:
+
+- `LC_COLLATE`: text compares with the locale's collation (`strcoll`). Lines
+  the locale collates the same keep their input order, as in sort (macOS gives
+  Cyrillic no collation weight in en_US.UTF-8, for example).
+- `LC_CTYPE`: in UTF-8, `-k` character offsets count characters; `-d`, `-i`
+  and `-f` use the locale's character classes in any encoding.
+- `LC_NUMERIC`: `-n`/`-h`/`-g` use the locale's decimal point and thousands
+  separator (`1,000` = 1000 in en_US).
+- `LC_TIME`: `-M` matches the locale's month abbreviations.
+
+Set `LC_ALL=C` for byte order and English months.
 
 On Linux the release binaries are static musl builds, whose C library has no
 collation: text always compares in byte order there, and numbers use C rules.
@@ -54,7 +62,8 @@ collation: text always compares in byte order there, and numbers use C rules.
 - `--files0-from -` reads the file list from stdin.
 - Invalid UTF-8 in a UTF-8 locale compares by bytes; sort fails with
   "Illegal byte sequence".
-- Month names (`-M`) are always the English abbreviations JAN to DEC.
+- A UTF-8 locale whose decimal point or thousands separator is not ASCII
+  (a narrow no-break space, say) has none for `-n`/`-h`/`-g`.
 - `-R` uses a different hash, so a given `--random-source` gives a different
   (but repeatable) order than sort's.
 - Two odd uses of the thousands separator don't reproduce sort's ordering
