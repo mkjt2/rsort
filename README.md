@@ -43,19 +43,19 @@ sort's time on average):
 | merge | `-m` | C | 46 ms | **31 ms** | 0.68× |
 | random | `-R --random-source FILE` | C | 222 ms | **65 ms** | 0.29× |
 
-**Peak memory**:
+**Peak memory** (lower ratio is better):
 
-| Scenario | Flags | Locale | sort | rsort |
-| --- | --- | --- | ---: | ---: |
-| text | | C | 40 MiB | **30 MiB** |
-| text | | en_US.UTF-8 | 60 MiB | **40 MiB** |
-| fold case | `-f` | en_US.UTF-8 | 101 MiB | **40 MiB** |
-| numeric | `-n` | C | 44 MiB | **25 MiB** |
-| month | `-M` | C | 65 MiB | **28 MiB** |
-| keys | `-t '\t' -k2,2 -k3,3n` | C | 90 MiB | **42 MiB** |
-| keys | `-t '\t' -k2,2 -k3,3n` | en_US.UTF-8 | 146 MiB | **52 MiB** |
-| check sorted | `-c` | C | **1 MiB** | 2 MiB |
-| merge | `-m` | C | **1 MiB** | 2 MiB |
+| Scenario | Flags | Locale | sort | rsort | rsort/sort |
+| --- | --- | --- | ---: | ---: | ---: |
+| text |  | C | 40 MiB | **30 MiB** | 0.75× |
+| text |  | en_US.UTF-8 | 60 MiB | **40 MiB** | 0.67× |
+| fold case | `-f` | en_US.UTF-8 | 101 MiB | **40 MiB** | 0.40× |
+| numeric | `-n` | C | 44 MiB | **25 MiB** | 0.57× |
+| month | `-M` | C | 65 MiB | **28 MiB** | 0.43× |
+| keys | `-t '\t' -k2,2 -k3,3n` | C | 90 MiB | **42 MiB** | 0.47× |
+| keys | `-t '\t' -k2,2 -k3,3n` | en_US.UTF-8 | 146 MiB | **52 MiB** | 0.36× |
+| check sorted | `-c` | C | **1.00 MiB** | 2.25 MiB | 2.25× |
+| merge | `-m` | C | **1.00 MiB** | 2.23 MiB | 2.23× |
 
 ## Validation
 
