@@ -53,8 +53,12 @@ omits the name.
 - --version prints rsort's own version, not 2.3-Apple.
 - -C also has a long form, --check-silent (cli-maker requires a long name).
 
+Legacy +POS1 [-POS2] keys are rewritten to -k before options are parsed, as \
+sort's fix_obsolete_keys does: +F[.C][OPTS] becomes -k(F+1).(C+1)OPTS, and a \
+following -F[.C][OPTS] adds the end (,F.0, or ,(F+1).C with a character). \
+Every argument before `--` is rewritten, so `+0` is a file name only after `--`.
+
 Out of scope (rejected as usage errors):
-- Legacy +POS1 [-POS2] keys: an argument starting with + is a FILE operand.
 - --debug.
 
 Accepted and ignored for script compatibility (in-memory sort, no tuning knobs): \

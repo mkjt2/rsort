@@ -30,6 +30,10 @@ rsort --help                         # every flag, with examples and exit codes
 are `--help` and `--version` only. `rsort --generate man|schema|complete-<shell>`
 prints a man page, the interface as JSON, or shell completions.
 
+The obsolete `+POS1 [-POS2]` keys work as in sort: fields and characters
+count from 0, so `+1 -2` is `-k2.1,2.0`. As in sort, they are recognized
+anywhere before `--`.
+
 ### Locale
 
 Like sort, rsort follows `LC_ALL`, then `LC_COLLATE`, then `LANG`. In a non-C
@@ -60,8 +64,7 @@ collation: text always compares in byte order there, and numbers use C rules.
 - `-S`, `-T`, `--parallel`, `--batch-size`, `--compress-program`,
   `--radixsort`, `--mergesort`, `--qsort`, `--heapsort` and `--mmap` are
   accepted and ignored: rsort sorts in memory.
-- Not supported: the obsolete `+POS1 -POS2` keys (an argument starting with
-  `+` is a file name) and `--debug`.
+- Not supported: `--debug`.
 
 ## Development
 

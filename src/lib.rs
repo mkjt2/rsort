@@ -41,6 +41,11 @@ pub fn run(args: Vec<OsString>, io: Io) -> i32 {
         return finish(result, false, false, io.err);
     }
 
+    // sort rewrites the obsolete `+POS1 -POS2` keys before parsing options.
+    let args = match sort::obsolete::translate(args) {
+        Ok(args) => args,
+        Err(message) => return finish(Err(AppError::Usage(message)), json, false, io.err),
+    };
     let matches = match cli::command().try_get_matches_from(args) {
         Ok(m) => m,
         Err(e) => return clap_error(e, json, no_color, io),

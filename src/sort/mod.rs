@@ -3,6 +3,7 @@
 
 pub mod collate;
 pub mod key;
+pub mod obsolete;
 pub mod value;
 
 use collate::{Collator, NumberFormat};
