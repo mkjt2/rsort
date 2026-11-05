@@ -166,7 +166,7 @@ mod macos {
         if !sort.exists() {
             return;
         }
-        let input = "ab\na b\na-b\naB\n\u{e9}\ne\nE\nf\n\u{c9}t\u{e9}\n_x\nZ\nz\n10\n9\n\u{fc}ber\nUber\n1,000\n999\n2,5K\n1.5e3\n";
+        let input = "ab\na b\na-b\naB\n\u{e9}\ne\nE\nf\n\u{c9}t\u{e9}\n_x\nZ\nz\n10\n9\n\u{fc}ber\nUber\n1,000\n999\n2,5K\n1.5e3\n\u{e5}b\n\u{c5}a\naa\nAb\n";
         let dir = tempfile::tempdir().unwrap();
         for args in [
             &[][..],

@@ -126,6 +126,65 @@ thread_local! {
     static BUFFERS: RefCell<(Vec<u8>, Vec<u8>)> = const { RefCell::new((Vec::new(), Vec::new())) };
 }
 
+/// Append the strxfrm of `out[start..end]` (up to its first NUL) to `out`
+/// and return the appended range. Comparing these bytes orders keys as
+/// strcoll does, so each key is collated once instead of per comparison.
+/// `None` when strxfrm failed: macOS then copies the input unchanged (for
+/// example for a precomposed `Å`) although strcoll still collates it.
+pub fn xfrm_from(out: &mut Vec<u8>, start: usize, end: usize) -> Option<(usize, usize)> {
+    BUFFERS.with_borrow_mut(|(src, _)| {
+        load_c_string(src, &out[start..end]);
+        xfrm_into(src, out)
+    })
+}
+
+/// Like [`xfrm_from`] for a key that is not in `out`.
+pub fn xfrm(key: &[u8], out: &mut Vec<u8>) -> Option<(usize, usize)> {
+    BUFFERS.with_borrow_mut(|(src, _)| {
+        load_c_string(src, key);
+        xfrm_into(src, out)
+    })
+}
+
+/// `buf` = `key` up to its first NUL, NUL-terminated.
+fn load_c_string(buf: &mut Vec<u8>, key: &[u8]) {
+    let cut = key.iter().position(|&c| c == 0).unwrap_or(key.len());
+    buf.clear();
+    buf.extend_from_slice(&key[..cut]);
+    buf.push(0);
+}
+
+fn xfrm_into(src: &[u8], out: &mut Vec<u8>) -> Option<(usize, usize)> {
+    let start = out.len();
+    // macOS keys run about 6 bytes per input byte; retry once if short.
+    let mut room = src.len() * 8 + 8;
+    loop {
+        out.reserve(room);
+        // SAFETY: `src` is NUL-terminated with no other NUL; the destination
+        // has `room` writable bytes; strxfrm writes at most `room` bytes and
+        // returns the full length, which we only keep when it fits.
+        let n = unsafe {
+            libc::strxfrm(
+                out.as_mut_ptr().add(start).cast(),
+                src.as_ptr().cast(),
+                room,
+            )
+        };
+        if n < room {
+            // SAFETY: strxfrm initialized `n` bytes after `start`.
+            unsafe { out.set_len(start + n) };
+            // A real key never equals its input (it encodes weights), so an
+            // unchanged copy is the failure fallback.
+            if out[start..] == src[..src.len() - 1] {
+                out.truncate(start);
+                return None;
+            }
+            return Some((start, start + n));
+        }
+        room = n + 1;
+    }
+}
+
 /// strcoll on NUL-free byte strings, reusing buffers for the terminators.
 fn strcoll(a: &[u8], b: &[u8]) -> Ordering {
     BUFFERS.with_borrow_mut(|(x, y)| {
@@ -193,5 +252,14 @@ mod tests {
         assert_eq!(c.compare(b"\xff", b"a"), Ordering::Greater);
         assert_eq!(c.compare(b"a\0b", b"a\0c"), Ordering::Less);
         assert_eq!(c.compare(b"a", b"a"), Ordering::Equal);
+    }
+
+    #[test]
+    fn xfrm_treats_an_unchanged_copy_as_failure() {
+        // The test process runs in the C locale, where strxfrm copies.
+        let mut out = b"ab\0c".to_vec();
+        assert_eq!(xfrm_from(&mut out, 0, 4), None);
+        assert_eq!(xfrm(&[b'x'; 100], &mut out), None);
+        assert_eq!(out, b"ab\0c", "a failed key leaves nothing behind");
     }
 }

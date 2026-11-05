@@ -32,33 +32,37 @@ pub fn run(ctx: &mut Ctx, cli: &Cli, locale: Locale) -> Result<(), AppError> {
     }
     let sep = if cli.zero_terminated { b'\0' } else { b'\n' };
 
-    let mut per_input = Vec::with_capacity(inputs.len());
-    for path in &inputs {
-        let data = read_input(ctx, path)?;
-        let records: Vec<Record> = split_lines(data, sep)
-            .into_iter()
-            .map(|line| sorter.record(line))
-            .collect();
-        per_input.push(records);
-    }
+    let data = inputs
+        .iter()
+        .map(|path| read_input(ctx, path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut keys = sorter.keys();
+    let mut per_input: Vec<Vec<Record>> = data
+        .iter()
+        .map(|d| {
+            lines(d, sep)
+                .map(|line| sorter.record(&mut keys, line))
+                .collect()
+        })
+        .collect();
 
     if let Some(diagnose) = check {
         let records = per_input.pop().unwrap_or_default();
         let name = inputs[0].display().to_string();
-        return check_order(&sorter, &records, &name, diagnose);
+        return check_order(&sorter, &keys, &records, &name, diagnose);
     }
 
     let records = if cli.merge {
-        sorter.merge(per_input)
+        sorter.merge(&keys, per_input)
     } else {
         let mut all: Vec<Record> = per_input.into_iter().flatten().collect();
-        sorter.sort(&mut all);
+        sorter.sort(&keys, &mut all);
         all
     };
 
     let mut out = Vec::with_capacity(records.iter().map(|r| r.line.len() + 1).sum());
     for r in &records {
-        out.extend_from_slice(&r.line);
+        out.extend_from_slice(r.line);
         out.push(sep);
     }
     match &cli.output {
@@ -193,8 +197,8 @@ fn input_names(ctx: &mut Ctx, cli: &Cli) -> Result<Vec<PathBuf>, AppError> {
         ));
     }
     let data = read_input(ctx, list)?;
-    let names = split_lines(data, b'\0');
-    if names.iter().any(Vec::is_empty) {
+    let names: Vec<&[u8]> = lines(&data, b'\0').collect();
+    if names.iter().any(|n| n.is_empty()) {
         return Err(AppError::Usage(format!(
             "--files0-from {}: empty file name",
             list.display()
@@ -207,9 +211,9 @@ fn input_names(ctx: &mut Ctx, cli: &Cli) -> Result<Vec<PathBuf>, AppError> {
 }
 
 #[cfg(unix)]
-fn path_from_bytes(bytes: Vec<u8>) -> PathBuf {
-    use std::os::unix::ffi::OsStringExt;
-    PathBuf::from(std::ffi::OsString::from_vec(bytes))
+fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
 }
 
 fn read_input(ctx: &mut Ctx, path: &Path) -> Result<Vec<u8>, AppError> {
@@ -221,30 +225,32 @@ fn read_input(ctx: &mut Ctx, path: &Path) -> Result<Vec<u8>, AppError> {
     std::fs::read(path).map_err(|e| io_error(path, &e))
 }
 
-/// Split on `sep`; a missing final separator still ends a line.
-fn split_lines(mut data: Vec<u8>, sep: u8) -> Vec<Vec<u8>> {
-    if data.is_empty() {
-        return Vec::new();
-    }
-    if data.last() == Some(&sep) {
-        data.pop();
-    }
-    data.split(|&b| b == sep).map(<[u8]>::to_vec).collect()
+/// The lines of `data` split on `sep`; a missing final separator still
+/// ends a line.
+fn lines(data: &[u8], sep: u8) -> impl Iterator<Item = &[u8]> {
+    let body = match data.split_last() {
+        None => None,
+        Some((&last, rest)) if last == sep => Some(rest),
+        Some(_) => Some(data),
+    };
+    body.into_iter()
+        .flat_map(move |b| b.split(move |&c| c == sep))
 }
 
 fn check_order(
     sorter: &Sorter,
+    keys: &crate::sort::Keys,
     records: &[Record],
     name: &str,
     diagnose: bool,
 ) -> Result<(), AppError> {
-    match sorter.first_disorder(records) {
+    match sorter.first_disorder(keys, records) {
         None => Ok(()),
         Some(_) if !diagnose => Err(AppError::Disorder(String::new())),
         Some(i) => Err(AppError::Disorder(format!(
             "{name}:{}: disorder: {}",
             i + 1,
-            String::from_utf8_lossy(&records[i].line)
+            String::from_utf8_lossy(records[i].line)
         ))),
     }
 }
@@ -261,11 +267,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn split_lines_handles_missing_and_present_final_separators() {
-        assert!(split_lines(Vec::new(), b'\n').is_empty());
-        assert_eq!(split_lines(b"a\nb".to_vec(), b'\n'), [b"a", b"b"]);
-        assert_eq!(split_lines(b"a\nb\n".to_vec(), b'\n'), [b"a", b"b"]);
-        assert_eq!(split_lines(b"\n".to_vec(), b'\n'), [b""]);
+    fn lines_handle_missing_and_present_final_separators() {
+        let split = |d: &'static [u8]| lines(d, b'\n').collect::<Vec<_>>();
+        assert!(split(b"").is_empty());
+        assert_eq!(split(b"a\nb"), [b"a", b"b"]);
+        assert_eq!(split(b"a\nb\n"), [b"a", b"b"]);
+        assert_eq!(split(b"\n"), [b""]);
     }
 
     #[test]

@@ -96,6 +96,18 @@ impl KeyDef {
         }
     }
 
+    /// The whole line as untransformed text (the default key, with or
+    /// without `-r`): two such keys are equal only for equal lines.
+    pub fn is_plain_whole_line(&self) -> bool {
+        let o = &self.order;
+        self.start.field == 1
+            && self.start.char == 1
+            && !self.start.blanks
+            && self.end.is_none()
+            && o.mode == Mode::Text
+            && !(o.fold || o.dictionary || o.nonprinting)
+    }
+
     /// Parse `F[.C][OPTS][,F[.C][OPTS]]`. A key with no option letters takes
     /// the global ordering and blank handling.
     pub fn parse(spec: &str, global: Order, global_blanks: bool) -> Result<KeyDef, String> {

@@ -1,22 +1,55 @@
 //! Comparable key values, one kind per ordering mode, computed once per line.
 
-use super::collate::NumberFormat;
+use super::collate::{self, Collator, NumberFormat};
 use super::key::{Mode, Order, is_blank, skip_blanks};
 use std::cmp::Ordering;
 use std::hash::Hasher;
 
+/// Where a key's bytes are: a range of its line, or of the shared arena
+/// that holds rewritten keys (-d/-f/-i) and collation keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Span {
+    Line(usize, usize),
+    Arena(usize, usize),
+}
+
+impl Span {
+    pub fn get<'a>(self, line: &'a [u8], arena: &'a [u8]) -> &'a [u8] {
+        match self {
+            Span::Line(b, e) => &line[b..e],
+            Span::Arena(b, e) => &arena[b..e],
+        }
+    }
+}
+
+/// How a text key collates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coll {
+    /// By bytes: the C locale, or invalid UTF-8 in a UTF-8 locale (which
+    /// then compares by bytes against everything).
+    Bytes,
+    /// By its strxfrm key, at this arena range.
+    Key(usize, usize),
+    /// By strcoll at each comparison: strxfrm failed for this key.
+    Strcoll,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
-    /// Untransformed text: a byte range of the line.
-    Range(usize, usize),
-    /// Text after -d/-f/-i.
-    Text(Vec<u8>),
+    Text {
+        key: Span,
+        coll: Coll,
+    },
     Numeric(Decimal),
     General(General),
     Human(Human),
     Month(u8),
-    Version(Vec<u8>),
-    Random(u64, Vec<u8>),
+    /// The key and where its filevercmp suffix starts.
+    Version {
+        key: Span,
+        suffix: Option<usize>,
+    },
+    Random(u64, Span),
 }
 
 /// What key values depend on beyond the key itself.
@@ -27,50 +60,140 @@ pub struct Context {
     /// UTF-8 locale: text options work by character.
     pub utf8: bool,
     pub numbers: NumberFormat,
+    pub collator: Collator,
 }
 
-/// Compute the value of the key at `begin..end` of `line`. As in sort, -d,
-/// -i and -f rewrite the key before any mode interprets it.
-pub fn value(line: &[u8], begin: usize, end: usize, order: &Order, cx: &Context) -> Value {
+/// Compute the value of the key at `begin..end` of `line`, storing any
+/// derived bytes in `arena`. As in sort, -d, -i and -f rewrite the key
+/// before any mode interprets it.
+pub fn value(
+    line: &[u8],
+    begin: usize,
+    end: usize,
+    order: &Order,
+    cx: &Context,
+    arena: &mut Vec<u8>,
+) -> Value {
     let end = end.max(begin);
-    if order.mode == Mode::Text && !(order.fold || order.dictionary || order.nonprinting) {
-        return Value::Range(begin, end);
-    }
-    let key = transform(&line[begin..end], order, cx.utf8);
-    match order.mode {
-        Mode::Text => Value::Text(key),
-        Mode::Numeric => Value::Numeric(Decimal::parse(&key, &cx.numbers).0),
-        Mode::General => Value::General(General::parse(&key, cx.numbers.decimal)),
-        Mode::Human => Value::Human(Human::parse(&key, &cx.numbers)),
-        Mode::Month => Value::Month(month(&key)),
-        Mode::Version => Value::Version(key),
-        Mode::Random => {
-            let mut h = std::hash::DefaultHasher::new();
-            h.write_u64(cx.seed);
-            h.write(&key);
-            Value::Random(h.finish(), key)
+    let mark = arena.len();
+    let key = if order.fold || order.dictionary || order.nonprinting {
+        transform_into(&line[begin..end], order, cx.utf8, arena);
+        Span::Arena(mark, arena.len())
+    } else {
+        Span::Line(begin, end)
+    };
+    let parsed = {
+        let bytes = key.get(line, arena);
+        match order.mode {
+            Mode::Text => None,
+            Mode::Version => {
+                return Value::Version {
+                    key,
+                    suffix: version_suffix(bytes),
+                };
+            }
+            Mode::Random => {
+                let mut h = std::hash::DefaultHasher::new();
+                h.write_u64(cx.seed);
+                h.write(bytes);
+                return Value::Random(h.finish(), key);
+            }
+            Mode::Numeric => Some(Value::Numeric(Decimal::parse(bytes, &cx.numbers).0)),
+            Mode::General => Some(Value::General(General::parse(bytes, cx.numbers.decimal))),
+            Mode::Human => Some(Value::Human(Human::parse(bytes, &cx.numbers))),
+            Mode::Month => Some(Value::Month(month(bytes))),
         }
+    };
+    if let Some(v) = parsed {
+        arena.truncate(mark);
+        return v;
+    }
+    let coll = match cx.collator {
+        Collator::Bytes => Coll::Bytes,
+        Collator::Locale { utf8 } => {
+            if utf8 && std::str::from_utf8(key.get(line, arena)).is_err() {
+                Coll::Bytes
+            } else {
+                let xfrm = match key {
+                    Span::Line(b, e) => collate::xfrm(&line[b..e], arena),
+                    Span::Arena(b, e) => collate::xfrm_from(arena, b, e),
+                };
+                xfrm.map_or(Coll::Strcoll, |(b, e)| Coll::Key(b, e))
+            }
+        }
+    };
+    Value::Text { key, coll }
+}
+
+/// The first 8 bytes, big-endian and zero-padded: comparing prefixes never
+/// contradicts comparing the whole byte strings.
+pub fn prefix8(bytes: &[u8]) -> u64 {
+    let mut buf = [0u8; 8];
+    let n = bytes.len().min(8);
+    buf[..n].copy_from_slice(&bytes[..n]);
+    u64::from_be_bytes(buf)
+}
+
+impl Value {
+    /// A u64 whose order agrees with [`compare`] (equal prefixes say
+    /// nothing), or `None` for a text key without a collation key while the
+    /// locale collates: it compares by bytes or strcoll against the others,
+    /// so no prefix is consistent.
+    pub fn prefix(&self, line: &[u8], arena: &[u8], collator: Collator) -> Option<u64> {
+        Some(match self {
+            Value::Text {
+                coll: Coll::Key(b, e),
+                ..
+            } => prefix8(&arena[*b..*e]),
+            Value::Text { key, .. } => match collator {
+                Collator::Bytes => prefix8(key.get(line, arena)),
+                Collator::Locale { .. } => return None,
+            },
+            Value::Month(m) => u64::from(*m),
+            Value::Random(h, _) => *h,
+            _ => 0,
+        })
     }
 }
 
-/// Compare two values of the same key. `text` compares text bytes (the
-/// collation); `a_line`/`b_line` resolve `Range`s.
+/// Compare two values of the same key; `a_line`/`b_line` and `arena`
+/// resolve spans.
 pub fn compare(
     a: &Value,
     a_line: &[u8],
     b: &Value,
     b_line: &[u8],
-    text: &dyn Fn(&[u8], &[u8]) -> Ordering,
+    arena: &[u8],
+    collator: Collator,
 ) -> Ordering {
     match (a, b) {
-        (Value::Range(a0, a1), Value::Range(b0, b1)) => text(&a_line[*a0..*a1], &b_line[*b0..*b1]),
-        (Value::Text(x), Value::Text(y)) => text(x, y),
+        (Value::Text { key: ka, coll: ca }, Value::Text { key: kb, coll: cb }) => {
+            let (x, y) = (ka.get(a_line, arena), kb.get(b_line, arena));
+            match (ca, cb) {
+                (Coll::Key(a0, a1), Coll::Key(b0, b1)) => {
+                    arena[*a0..*a1].cmp(&arena[*b0..*b1]).then_with(|| x.cmp(y))
+                }
+                (Coll::Bytes, _) | (_, Coll::Bytes) => x.cmp(y),
+                _ => collator.compare(x, y),
+            }
+        }
         (Value::Numeric(x), Value::Numeric(y)) => x.cmp(y),
         (Value::General(x), Value::General(y)) => x.compare(y),
         (Value::Human(x), Value::Human(y)) => x.cmp(y),
         (Value::Month(x), Value::Month(y)) => x.cmp(y),
-        (Value::Version(x), Value::Version(y)) => version_cmp(x, y),
-        (Value::Random(hx, x), Value::Random(hy, y)) => hx.cmp(hy).then_with(|| text(x, y)),
+        (
+            Value::Version {
+                key: ka,
+                suffix: sa,
+            },
+            Value::Version {
+                key: kb,
+                suffix: sb,
+            },
+        ) => version_cmp_with(ka.get(a_line, arena), *sa, kb.get(b_line, arena), *sb),
+        (Value::Random(hx, x), Value::Random(hy, y)) => hx
+            .cmp(hy)
+            .then_with(|| collator.compare(x.get(a_line, arena), y.get(b_line, arena))),
         // Every record's key k has the same kind.
         _ => Ordering::Equal,
     }
@@ -81,8 +204,15 @@ pub fn compare(
 /// tab is kept. In a UTF-8 locale valid text is handled by character;
 /// otherwise byte by byte as in the C locale.
 pub fn transform(raw: &[u8], order: &Order, utf8: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(raw.len());
+    transform_into(raw, order, utf8, &mut out);
+    out
+}
+
+/// [`transform`], appending to `out`.
+pub fn transform_into(raw: &[u8], order: &Order, utf8: bool, out: &mut Vec<u8>) {
     if utf8 && let Ok(text) = std::str::from_utf8(raw) {
-        return transform_chars(text, order).into_bytes();
+        return transform_chars(text, order, out);
     }
     let keep = |b: u8| {
         if order.dictionary {
@@ -93,19 +223,16 @@ pub fn transform(raw: &[u8], order: &Order, utf8: bool) -> Vec<u8> {
             true
         }
     };
-    raw.iter()
-        .filter(|&&b| keep(b))
-        .map(|&b| {
-            if order.fold {
-                b.to_ascii_uppercase()
-            } else {
-                b
-            }
-        })
-        .collect()
+    out.extend(raw.iter().filter(|&&b| keep(b)).map(|&b| {
+        if order.fold {
+            b.to_ascii_uppercase()
+        } else {
+            b
+        }
+    }));
 }
 
-fn transform_chars(text: &str, order: &Order) -> String {
+fn transform_chars(text: &str, order: &Order, out: &mut Vec<u8>) {
     let keep = |c: char| {
         if order.dictionary {
             c == ' ' || c == '\t' || c.is_alphanumeric()
@@ -115,15 +242,15 @@ fn transform_chars(text: &str, order: &Order) -> String {
             true
         }
     };
-    let mut out = String::with_capacity(text.len());
+    let mut buf = [0u8; 4];
     for c in text.chars().filter(|&c| keep(c)) {
         let mut upper = c.to_uppercase();
-        match (order.fold, upper.next(), upper.next()) {
-            (true, Some(u), None) => out.push(u),
-            _ => out.push(c),
-        }
+        let c = match (order.fold, upper.next(), upper.next()) {
+            (true, Some(u), None) => u,
+            _ => c,
+        };
+        out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
     }
-    out
 }
 
 // --- -n --------------------------------------------------------------------
@@ -443,6 +570,23 @@ pub fn month(s: &[u8]) -> u8 {
 /// GNU filevercmp: hidden files first, suffixes like `.tar.gz` compared last,
 /// digit runs compared numerically, `~` before everything.
 pub fn version_cmp(a: &[u8], b: &[u8]) -> Ordering {
+    version_cmp_with(a, version_suffix(a), b, version_suffix(b))
+}
+
+/// Where [`version_cmp_with`] needs the suffix of `s` to start: after a
+/// leading dot, as filevercmp strips one before looking for suffixes.
+pub fn version_suffix(s: &[u8]) -> Option<usize> {
+    let skip = usize::from(s.first() == Some(&b'.'));
+    suffix_start(&s[skip..])
+}
+
+/// [`version_cmp`] with each side's [`version_suffix`] precomputed.
+pub fn version_cmp_with(
+    a: &[u8],
+    a_suffix: Option<usize>,
+    b: &[u8],
+    b_suffix: Option<usize>,
+) -> Ordering {
     let simple = a.cmp(b);
     if simple == Ordering::Equal {
         return simple;
@@ -461,8 +605,6 @@ pub fn version_cmp(a: &[u8], b: &[u8]) -> Ordering {
         (true, true) => (&a[1..], &b[1..]),
         (false, false) => (a, b),
     };
-    let a_suffix = suffix_start(a);
-    let b_suffix = suffix_start(b);
     let (mut a_len, mut b_len) = (a_suffix.unwrap_or(a.len()), b_suffix.unwrap_or(b.len()));
     if (a_suffix.is_some() || b_suffix.is_some()) && a[..a_len] == b[..b_len] {
         (a_len, b_len) = (a.len(), b.len());
