@@ -1,0 +1,63 @@
+# Hosted CI. `just ci` stays the canonical local check; this runs it on
+# macOS (where the tests also compare rsort with /usr/bin/sort), adds the
+# differential suites, and checks Linux with the static-link check.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    name: macOS (fmt, clippy, tests, coverage)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-llvm-cov
+      - run: just ci
+
+  differential:
+    name: macOS (compat and fuzz against /usr/bin/sort)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: /usr/bin/sort --version
+      - run: just compat --quick
+      - run: just fuzz -n 200
+
+  linux:
+    name: Linux (tests, static release binaries)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-zigbuild
+      - run: just test
+      - run: just static-check

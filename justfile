@@ -1,5 +1,5 @@
 # Local CI and release tasks. `just ci` is the canonical CI: it runs fully
-# locally and does not depend on GitHub Actions.
+# locally; .github/workflows/ci.yml runs it (and more) on every push.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 

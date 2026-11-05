@@ -1,5 +1,7 @@
 # rsort
 
+[![CI](https://github.com/mkjt2/rsort/actions/workflows/ci.yml/badge.svg)](https://github.com/mkjt2/rsort/actions/workflows/ci.yml)
+
 Sort, merge or check lines of text files.
 
 ## Install
