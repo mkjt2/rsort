@@ -42,7 +42,9 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+import harness
+from harness import ROOT
+
 OUT_DIR = ROOT / "target" / "fuzz"
 
 LOCALES = [
@@ -303,26 +305,16 @@ def printf(data: bytes) -> str:
     return f"printf '{''.join(plain)}'"
 
 
-_worker: dict = {}
-
-
-def init_worker(root: str, sort: str, rsort: str):
-    """Each worker process gets its own scratch directory."""
-    d = Path(tempfile.mkdtemp(prefix="w", dir=root))
-    _worker.update(dir=d, sort=sort, rsort=rsort)
-
-
 def environment(rng: random.Random, name: str) -> dict[str, str]:
     """A clean environment selecting `name` through LC_ALL or LANG."""
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("LC_", "LANG", "GNUSORT_"))}
-    env["LC_ALL" if rng.random() < 0.5 else "LANG"] = name
-    return env
+    return harness.clean_env(**{"LC_ALL" if rng.random() < 0.5 else "LANG": name})
 
 
 def run_job(job: Job) -> tuple[int, list[Failure]]:
     """Run one chunk of cases; returns how many were skipped and the failures."""
     gen = TARGETS[job.target][0]
-    sort, rsort, d = _worker["sort"], _worker["rsort"], _worker["dir"]
+    w = harness.worker
+    sort, rsort, d = w["sort"], w["rsort"], w["dir"]
     rng = random.Random(f"{job.seed}/{job.target}/{job.locale}/{job.chunk}")
     skipped, failures = 0, []
     for _ in range(job.count):
@@ -367,13 +359,7 @@ def main() -> int:
     p.add_argument("--locale", action="append", help="only this locale (repeatable)")
     p.add_argument("-n", "--cases", type=int, default=300, help="cases per target and locale")
     p.add_argument("--seed", type=int, default=1, help="random seed")
-    p.add_argument("--jobs", type=int, default=os.cpu_count(), help="parallel runs")
-    p.add_argument("--sort", default="/usr/bin/sort", help="reference sort")
-    p.add_argument("--rsort", default=str(ROOT / "target" / "release" / "rsort"), help="rsort binary")
-    p.add_argument("--show", type=int, default=10, help="mismatches to print")
-    p.add_argument(
-        "--mismatches", type=Path, default=OUT_DIR / "mismatches.txt", help="where to list every mismatch"
-    )
+    harness.add_tool_args(p, OUT_DIR, show=10)
     opts = p.parse_args()
     rsort = str(Path(opts.rsort).resolve())
 
@@ -391,7 +377,7 @@ def main() -> int:
     failures: list[Failure] = []
     start = time.time()
     with concurrent.futures.ProcessPoolExecutor(
-        opts.jobs, initializer=init_worker, initargs=(root, opts.sort, rsort)
+        opts.jobs, initializer=harness.init_worker, initargs=(root, opts.sort, rsort)
     ) as pool:
         for job, (skipped, fs) in zip(jobs, pool.map(run_job, jobs)):
             t = totals.setdefault((job.target, job.locale), [0, 0, 0])
@@ -409,18 +395,11 @@ def report(opts, totals, failures: list[Failure], elapsed: float):
     print(f"  sort   {opts.sort}")
     print(f"  rsort  {opts.rsort}")
     print(f"  seed   {opts.seed}, {opts.cases} cases per row, {elapsed:.0f} s\n")
-    rows = [("Target", "Locale", "Cases", "Skipped", "Failed")]
-    for (target, name), (n, skipped, bad) in totals.items():
-        rows.append((target, name, f"{n:,}", f"{skipped:,}", str(bad)))
-    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
-    line = "+" + "+".join("-" * (w + 2) for w in widths) + "+"
-    print(line)
-    for i, r in enumerate(rows):
-        cells = [f" {c:<{w}} " if j < 2 else f" {c:>{w}} " for j, (c, w) in enumerate(zip(r, widths))]
-        print("|" + "|".join(cells) + "|")
-        if i == 0:
-            print(line.replace("-", "="))
-    print(line)
+    rows = [
+        (target, name, f"{n:,}", f"{skipped:,}", str(bad))
+        for (target, name), (n, skipped, bad) in totals.items()
+    ]
+    print(harness.table(["Target", "Locale", "Cases", "Skipped", "Failed"], rows, right={2, 3, 4}))
     n = sum(t[0] - t[1] for t in totals.values())
     print(f"\n  {n - len(failures):,} of {n:,} compared cases match sort")
     if failures:

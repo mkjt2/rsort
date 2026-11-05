@@ -28,7 +28,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import lzma
-import os
+import multiprocessing
 import shlex
 import shutil
 import subprocess
@@ -38,7 +38,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+import harness
+from harness import ROOT
 FIXTURES = ROOT / "tests" / "upstream" / "testsuite"
 OUT_DIR = ROOT / "target" / "compat"
 
@@ -119,26 +120,13 @@ class Failure:
         return f"LC_ALL= LANG={c.lang} {tool} {cmd}"
 
 
-def environment(lang: str) -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("LC_")}
-    env["LANG"] = lang
-    return env
-
-
-_worker: dict = {}
-
-
-def init_worker(root: str, sort: str, rsort: str):
-    """Each worker process gets its own scratch directory."""
-    _worker.update(dir=Path(tempfile.mkdtemp(prefix="w", dir=root)), sort=sort, rsort=rsort)
-
-
-def run_in_worker(case: Case) -> list[Failure]:
-    return run_case(case, _worker["sort"], _worker["rsort"], _worker["dir"])
+def run_in_worker(case: Case) -> tuple[str, str, list[Failure]]:
+    w = harness.worker
+    return case.lang, case.keys, run_case(case, w["sort"], w["rsort"], w["dir"])
 
 
 def run_case(case: Case, sort: str, rsort: str, d: Path) -> list[Failure]:
-    env = environment(case.lang)
+    env = harness.clean_env(LANG=case.lang)
     want, got = d / "orig", d / "new"
     args = [case.keys, *case.extra, str(case.input)]
     a = subprocess.run([sort, *args, "-o", want], env=env, capture_output=True)
@@ -199,31 +187,24 @@ def main() -> int:
     p.add_argument(
         "--keys", action="append", help="only this flag set (repeatable; --keys=-Vs)"
     )
-    p.add_argument("--jobs", type=int, default=os.cpu_count(), help="parallel runs")
-    p.add_argument("--sort", default="/usr/bin/sort", help="reference sort")
-    p.add_argument(
-        "--rsort", default=str(ROOT / "target" / "release" / "rsort"), help="rsort binary"
-    )
-    p.add_argument("--show", type=int, default=20, help="mismatches to print")
-    p.add_argument(
-        "--mismatches",
-        type=Path,
-        default=OUT_DIR / "mismatches.txt",
-        help="where to list every mismatch",
-    )
+    harness.add_tool_args(p, OUT_DIR, show=20)
     opts = p.parse_args()
 
     langs = opts.lang or LANGS
     keysets = opts.keys or KEYS
     sample = FIXTURES / "sample.txt"
-    cases: list[Case] = []
-    for lang in langs:
-        for keys in keysets:
-            if skipped(lang, keys):
-                continue
-            for i, extra in enumerate(sample_variants(lang)):
-                if not opts.quick or i % 50 == 0:
-                    cases.append(Case(lang, keys, extra, sample))
+
+    def cases():
+        # Generated as the workers take them: the full sweep has millions.
+        for lang in langs:
+            for keys in keysets:
+                if skipped(lang, keys):
+                    continue
+                for i, extra in enumerate(sample_variants(lang)):
+                    if not opts.quick or i % 50 == 0:
+                        yield Case(lang, keys, extra, sample)
+
+    total = sum(1 for _ in cases())
     big: list[Case] = []
     if opts.big:
         path = big_input()
@@ -242,34 +223,30 @@ def main() -> int:
     totals: dict[tuple[str, str], list[int]] = {}
     start = time.time()
 
-    def record(case: Case, fs: list[Failure]):
-        t = totals.setdefault((case.lang, case.keys), [0, 0])
+    def record(lang: str, keys: str, fs: list[Failure]):
+        t = totals.setdefault((lang, keys), [0, 0])
         t[0] += 1
         t[1] += bool(fs)
         failures.extend(fs)
 
-    with concurrent.futures.ProcessPoolExecutor(
-        opts.jobs, initializer=init_worker, initargs=init
-    ) as pool:
-        done = 0
-        for case, fs in zip(cases, pool.map(run_in_worker, cases, chunksize=256)):
-            record(case, fs)
-            done += 1
-            if done % 20000 == 0 or done == len(cases):
+    with multiprocessing.Pool(opts.jobs, harness.init_worker, init) as pool:
+        for done, result in enumerate(pool.imap(run_in_worker, cases(), chunksize=256), 1):
+            record(*result)
+            if done % 20000 == 0 or done == total:
                 rate = done / max(time.time() - start, 1e-9)
-                left = (len(cases) - done) / rate
+                left = (total - done) / rate
                 print(
-                    f"  {done:,}/{len(cases):,} cases, {len(failures)} mismatches, "
+                    f"  {done:,}/{total:,} cases, {len(failures)} mismatches, "
                     f"~{left / 60:.0f} min left",
                     file=sys.stderr,
                 )
     # Big runs one or two at a time: each holds the whole file in memory.
     with concurrent.futures.ProcessPoolExecutor(
-        2, initializer=init_worker, initargs=init
+        2, initializer=harness.init_worker, initargs=init
     ) as pool:
-        for case, fs in zip(big, pool.map(run_in_worker, big)):
+        for case, (_, _, fs) in zip(big, pool.map(run_in_worker, big)):
             print(f"  big {case.lang} {case.keys}: {'ok' if not fs else 'MISMATCH'}", file=sys.stderr)
-            record(Case(case.lang, case.keys + " (big)", [], case.input), fs)
+            record(case.lang, case.keys + " (big)", fs)
 
     shutil.rmtree(root, ignore_errors=True)
     report(opts, totals, failures, time.time() - start)
@@ -277,28 +254,13 @@ def main() -> int:
 
 
 def report(opts, totals, failures: list[Failure], elapsed: float):
-    sort_version = subprocess.run(
-        [opts.sort, "--version"], capture_output=True, text=True
-    ).stdout.strip()
-    print(f"rsort compatibility suite (port of sort/testsuite/run.sh)")
-    print(f"  sort   {opts.sort} ({sort_version})")
+    print("rsort compatibility suite (port of sort/testsuite/run.sh)")
+    print(f"  sort   {opts.sort} ({harness.version(opts.sort)})")
     print(f"  rsort  {opts.rsort}")
     print(f"  mode   {'quick (every 50th case)' if opts.quick else 'full'}"
           f"{' + bigsample' if opts.big else ''}, {elapsed / 60:.1f} min\n")
-    rows = [("Locale", "Flags", "Cases", "Failed")]
-    for (lang, keys), (n, bad) in totals.items():
-        rows.append((lang, keys, f"{n:,}", str(bad)))
-    widths = [max(len(r[i]) for r in rows) for i in range(4)]
-    line = "+" + "+".join("-" * (w + 2) for w in widths) + "+"
-    print(line)
-    for i, r in enumerate(rows):
-        cells = [
-            f" {c:<{w}} " if j < 2 else f" {c:>{w}} " for j, (c, w) in enumerate(zip(r, widths))
-        ]
-        print("|" + "|".join(cells) + "|")
-        if i == 0:
-            print(line.replace("-", "="))
-    print(line)
+    rows = [(lang, keys, f"{n:,}", str(bad)) for (lang, keys), (n, bad) in totals.items()]
+    print(harness.table(["Locale", "Flags", "Cases", "Failed"], rows, right={2, 3}))
     n = sum(t[0] for t in totals.values())
     bad = sum(t[1] for t in totals.values())
     print(f"\n  {n - bad:,} of {n:,} cases match sort")

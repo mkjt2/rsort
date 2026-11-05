@@ -22,7 +22,7 @@ sum_for() { awk -v f="$NAME-$VERSION-$1.tar.gz" '$2 == f { print $1 }' "$sums"; 
 
 base="https://github.com/$REPO_SLUG/releases/download/v$VERSION"
 class="$(echo "$NAME" | awk -F- '{ for (i = 1; i <= NF; i++) printf "%s", toupper(substr($i,1,1)) substr($i,2) }')"
-desc="$(sed -n 's/^description *= *"\(.*\)"/\1/p' Cargo.toml | head -1)"
+desc="$(cargo_field description)"
 
 block() { # arch target
   local s; s="$(sum_for "$2")"

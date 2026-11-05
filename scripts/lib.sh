@@ -8,10 +8,12 @@ cd "$ROOT"
 die() { echo "error: $*" >&2; exit 1; }
 info() { echo "==> $*" >&2; }
 
-# Package name and version from Cargo.toml.
-NAME="$(sed -n 's/^name *= *"\(.*\)"/\1/p' Cargo.toml | head -1)"
-VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)"
-REPO_URL="$(sed -n 's/^repository *= *"\(.*\)"/\1/p' Cargo.toml | head -1)"
+# A string field of Cargo.toml's [package].
+cargo_field() { sed -n "s/^$1 *= *\"\(.*\)\"/\1/p" Cargo.toml | head -1; }
+
+NAME="$(cargo_field name)"
+VERSION="$(cargo_field version)"
+REPO_URL="$(cargo_field repository)"
 REPO_SLUG="${REPO_URL#https://github.com/}"
 
 # Read a TOML string array (single- or multi-line) from cli.toml's [project] table.

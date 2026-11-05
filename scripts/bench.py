@@ -31,6 +31,9 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import harness
+from harness import table, version
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "target" / "bench" / "data"
 DATA_VERSION = 2  # bump when a generator changes, to regenerate cached inputs
@@ -217,7 +220,8 @@ class Result:
     samples: dict = field(default_factory=dict)  # tool -> [Sample]
 
 
-def run_once(cmd: list, env: dict, scratch: Path) -> Sample:
+def run_once(cmd: list, env: dict, scratch: Path, digest: bool) -> Sample:
+    """Run `cmd` once; `digest` hashes its output (only the first timed run's is used)."""
     out_path, err_path = scratch / "stdout", scratch / "stderr"
     with open(out_path, "wb") as out, open(err_path, "wb") as err:
         start = time.perf_counter()
@@ -230,21 +234,20 @@ def run_once(cmd: list, env: dict, scratch: Path) -> Sample:
         seconds=seconds,
         rss=rss,
         code=proc.returncode,
-        digest=hashlib.sha256(out_path.read_bytes()).hexdigest(),
+        digest=hashlib.sha256(out_path.read_bytes()).hexdigest() if digest else "",
         stderr=err_path.read_text(errors="replace").strip(),
     )
 
 
 def bench(sc: Scenario, locale: str, tools: dict, lines: int, runs: int, warmup: int, scratch: Path) -> Result:
-    env = {k: v for k, v in os.environ.items() if not (k.startswith("LC_") or k == "LANG")}
-    env["LC_ALL"] = locale
+    env = harness.clean_env(LC_ALL=locale)
     args = [a.replace("{random_source}", str(random_source())) for a in sc.args]
     inputs = [str(dataset(name, lines)) for name in sc.inputs]
     result = Result(sc, locale, {tool: [] for tool in tools})
     order = list(tools)
     for i in range(warmup + runs):
         for tool in order if i % 2 == 0 else reversed(order):
-            sample = run_once([tools[tool], *args, *inputs], env, scratch)
+            sample = run_once([tools[tool], *args, *inputs], env, scratch, digest=i == warmup)
             if i >= warmup:
                 result.samples[tool].append(sample)
     return result
@@ -274,18 +277,6 @@ def outcome(r: Result) -> str:
     return "identical" if sort.digest == rsort.digest else "DIFFERENT"
 
 
-def table(headers: list, rows: list, right: set) -> str:
-    widths = [max(len(h), *(len(row[i]) for row in rows)) for i, h in enumerate(headers)]
-    rule = "+" + "+".join("-" * (w + 2) for w in widths) + "+"
-
-    def line(cells):
-        return "| " + " | ".join(
-            c.rjust(w) if i in right else c.ljust(w) for i, (c, w) in enumerate(zip(cells, widths))
-        ) + " |"
-
-    return "\n".join([rule, line(headers), rule.replace("-", "="), *map(line, rows), rule])
-
-
 def sysctl(name: str) -> str:
     try:
         return subprocess.run(["sysctl", "-n", name], capture_output=True, text=True).stdout.strip()
@@ -311,14 +302,6 @@ def machine() -> str:
             pass
     ram = f", {mem / 2**30:.0f} GiB RAM" if mem else ""
     return f"{cpu}, {os.cpu_count()} cores{ram}, {platform.system()} {platform.release()} {platform.machine()}"
-
-
-def version(binary: str) -> str:
-    try:
-        out = subprocess.run([binary, "--version"], capture_output=True, text=True).stdout
-    except OSError:
-        return "?"
-    return out.splitlines()[0].strip() if out.strip() else "?"
 
 
 def report(results: list, tools: dict, lines: int, runs: int, warmup: int, skipped: list) -> str:
