@@ -352,11 +352,13 @@ mod tests {
         let input = [
             "-2", "-10", "0", "-0", "3", "1.5", "1.25", "10", long, longer, &huge, &huger, "-.5",
         ];
+        // Like sort, only the first 128 integer digits count, so the
+        // 301-digit 10…0 sorts before the 300-digit 9…9.
         assert_eq!(
             sorted(&n, &input),
             [
-                "-10", "-2", "-.5", "-0", "0", "1.25", "1.5", "3", "10", long, longer, &huge,
-                &huger
+                "-10", "-2", "-.5", "-0", "0", "1.25", "1.5", "3", "10", long, longer, &huger,
+                &huge
             ]
         );
         let h = sorter(Order {

@@ -44,8 +44,9 @@ variable, then `LANG`:
   Cyrillic no collation weight in en_US.UTF-8, for example).
 - `LC_CTYPE`: in UTF-8, `-k` character offsets count characters; `-d`, `-i`
   and `-f` use the locale's character classes in any encoding.
-- `LC_NUMERIC`: `-n`/`-h`/`-g` use the locale's decimal point and thousands
-  separator (`1,000` = 1000 in en_US).
+- `LC_NUMERIC`: `-n`/`-h`/`-g` use the locale's decimal point, thousands
+  separator and minus sign (`1,000` = 1000 in en_US; in sv_FI `−5` is negative
+  and `-5` is not a number). `GNUSORT_NUMERIC_COMPATIBILITY` works as in sort.
 - `LC_TIME`: `-M` matches the locale's month abbreviations.
 
 Set `LC_ALL=C` for byte order and English months.
@@ -62,14 +63,11 @@ collation: text always compares in byte order there, and numbers use C rules.
 - `--files0-from -` reads the file list from stdin.
 - Invalid UTF-8 in a UTF-8 locale compares by bytes; sort fails with
   "Illegal byte sequence".
-- A UTF-8 locale whose decimal point or thousands separator is not ASCII
-  (a narrow no-break space, say) has none for `-n`/`-h`/`-g`.
+- `GNUSORT_COMPATIBLE_BLANKS` (blanks are all white space) is not supported.
+- In kk_KZ.PT154, whose collation macOS can't use (strcoll fails), the order
+  differs.
 - `-R` uses a different hash, so a given `--random-source` gives a different
   (but repeatable) order than sort's.
-- Two odd uses of the thousands separator don't reproduce sort's ordering
-  of `-n`/`-h`: one before any digit and followed by a zero (`,05` in
-  en_US), and a zero written with one (`0,0`, which sort places between 0
-  and 1).
 - `-S`, `-T`, `--parallel`, `--batch-size`, `--compress-program`,
   `--radixsort`, `--mergesort`, `--qsort`, `--heapsort` and `--mmap` are
   accepted and ignored: rsort sorts in memory.

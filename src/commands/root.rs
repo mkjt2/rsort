@@ -28,14 +28,13 @@ pub fn run(ctx: &mut Ctx, cli: &Cli, locale: Locale) -> Result<(), AppError> {
         utf8: locale.utf8,
         ..sorter(cli)?
     };
-    // As in sort, a -t that is also the thousands separator is only a field
-    // separator.
-    if sorter.separator.is_some() && sorter.separator == sorter.numbers.thousands {
-        sorter.numbers.thousands = None;
-    }
-    // Likewise -n and -h stop reading fractions at a -t decimal point.
-    if sorter.separator == Some(sorter.numbers.decimal) {
-        sorter.numbers.integers_only = true;
+    // As in sort, a -t equal to the decimal point, thousands separator or
+    // minus sign is only a field separator for -n and -h, unless
+    // GNUSORT_NUMERIC_COMPATIBILITY is set.
+    if let Some(sep) = sorter.separator
+        && !locale.gnu_numbers
+    {
+        sorter.numbers = sorter.numbers.separated_by(sep);
     }
     let sep = if cli.zero_terminated { b'\0' } else { b'\n' };
 

@@ -30,6 +30,7 @@ import concurrent.futures
 import lzma
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -195,13 +196,21 @@ def main() -> int:
     p.add_argument("--quick", action="store_true", help="run every 50th sample case")
     p.add_argument("--big", action="store_true", help="also sort bigsample.txt")
     p.add_argument("--lang", action="append", help="only this locale (repeatable)")
-    p.add_argument("--keys", action="append", help="only this flag set (repeatable)")
+    p.add_argument(
+        "--keys", action="append", help="only this flag set (repeatable; --keys=-Vs)"
+    )
     p.add_argument("--jobs", type=int, default=os.cpu_count(), help="parallel runs")
     p.add_argument("--sort", default="/usr/bin/sort", help="reference sort")
     p.add_argument(
         "--rsort", default=str(ROOT / "target" / "release" / "rsort"), help="rsort binary"
     )
     p.add_argument("--show", type=int, default=20, help="mismatches to print")
+    p.add_argument(
+        "--mismatches",
+        type=Path,
+        default=OUT_DIR / "mismatches.txt",
+        help="where to list every mismatch",
+    )
     opts = p.parse_args()
 
     langs = opts.lang or LANGS
@@ -262,6 +271,7 @@ def main() -> int:
             print(f"  big {case.lang} {case.keys}: {'ok' if not fs else 'MISMATCH'}", file=sys.stderr)
             record(Case(case.lang, case.keys + " (big)", [], case.input), fs)
 
+    shutil.rmtree(root, ignore_errors=True)
     report(opts, totals, failures, time.time() - start)
     return 1 if failures else 0
 
@@ -293,11 +303,12 @@ def report(opts, totals, failures: list[Failure], elapsed: float):
     bad = sum(t[1] for t in totals.values())
     print(f"\n  {n - bad:,} of {n:,} cases match sort")
     if failures:
-        out = OUT_DIR / "mismatches.txt"
+        out = opts.mismatches
+        out.parent.mkdir(parents=True, exist_ok=True)
         with open(out, "w") as f:
             for x in failures:
                 f.write(f"{x.what}\t{x.command(opts.rsort)}\t{x.detail}\n")
-        print(f"  {len(failures):,} mismatches, all listed in {out.relative_to(ROOT)}:\n")
+        print(f"  {len(failures):,} mismatches, all listed in {out}:\n")
         for x in failures[: opts.show]:
             print(f"  [{x.what}] {x.command(opts.rsort)}\n      {x.detail}")
 

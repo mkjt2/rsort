@@ -1,7 +1,7 @@
 //! Key values: a fixed-size summary per key that decides most comparisons,
 //! and the full comparison of two keys for when summaries can't.
 
-use super::collate::{self, Collator, NumberFormat};
+use super::collate::{self, Collator, NumberFormat, Symbol};
 use super::ctype;
 use super::key::{Mode, Order, is_blank, skip_blanks};
 use std::cell::RefCell;
@@ -48,22 +48,23 @@ pub fn summarize(key: &[u8], mode: Mode, cx: &Context) -> Summary {
                 if utf8 && std::str::from_utf8(key).is_err() {
                     return Summary::None;
                 }
-                // Equal collation keys still fall back to bytes: never exact.
+                if !collate::xfrm_usable(key, utf8) {
+                    return Summary::None;
+                }
+                // Equal collation keys may still differ: never exact.
                 with_scratch(|buf| match collate::xfrm(key, buf) {
                     Some((b, e)) => ordered(bytes_bits(&buf[b..e]).0, false),
                     None => Summary::None,
                 })
             }
         },
-        Mode::Numeric => {
-            let (bits, exact) = Decimal::parse(key, &cx.numbers).0.bits();
-            ordered(bits, exact)
+        Mode::Numeric | Mode::Human => {
+            match Number::parse(key, &cx.numbers).bits(mode == Mode::Human) {
+                Some((bits, exact)) => ordered(bits, exact),
+                None => Summary::None,
+            }
         }
-        Mode::Human => {
-            let (bits, exact) = Human::parse(key, &cx.numbers).bits();
-            ordered(bits, exact)
-        }
-        Mode::General => match General::parse(key, cx.numbers.decimal).bits() {
+        Mode::General => match General::parse(key, cx).bits() {
             Some(bits) => ordered(bits, true),
             None => Summary::None,
         },
@@ -84,13 +85,9 @@ pub fn compare(
 ) -> Ordering {
     match mode {
         Mode::Text => text(a, b, cx.collator),
-        Mode::Numeric => Decimal::parse(a, &cx.numbers)
-            .0
-            .cmp(&Decimal::parse(b, &cx.numbers).0),
-        Mode::Human => Human::parse(a, &cx.numbers).cmp(&Human::parse(b, &cx.numbers)),
-        Mode::General => {
-            General::parse(a, cx.numbers.decimal).compare(&General::parse(b, cx.numbers.decimal))
-        }
+        Mode::Numeric | Mode::Human => Number::parse(a, &cx.numbers)
+            .compare(&Number::parse(b, &cx.numbers), mode == Mode::Human),
+        Mode::General => General::parse(a, cx).compare(&General::parse(b, cx)),
         Mode::Month => month(a).cmp(&month(b)),
         Mode::Random => random_hash(a, cx.seed)
             .cmp(&random_hash(b, cx.seed))
@@ -231,127 +228,60 @@ fn transform_chars(text: &str, order: &Order, fold: bool, out: &mut Vec<u8>) {
     }
 }
 
-// --- -n --------------------------------------------------------------------
+// --- -n and -h --------------------------------------------------------------
 
-/// An exact decimal: sign, integer digits without leading zeros, fraction
-/// digits without trailing zeros. Zero is never negative.
+/// Digits sort keeps of each part of a number (`MAX_NUM_SIZE`).
+const MAX_DIGITS: usize = 128;
+
+/// A number as sort's `read_number` sees it: a sign (-1, 0 for no digits,
+/// 1), the integer digits with leading zeros dropped (only those before any
+/// thousands separator), the fraction digits without trailing zeros, at most
+/// 128 of each, and the `-h` suffix after them (1 for K or k, up to 8 for Y).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Decimal {
-    negative: bool,
+pub struct Number {
+    sign: i8,
     int: Vec<u8>,
     frac: Vec<u8>,
+    suffix: u8,
 }
 
-impl Decimal {
-    /// Parse `[blanks][-]digits[.digits]`, with the locale's decimal point
-    /// and thousands separators (each followed by a digit or the decimal
-    /// point) in the integer part; returns the value and the index just
-    /// after it. Anything else is zero.
-    pub fn parse(s: &[u8], fmt: &NumberFormat) -> (Decimal, usize) {
-        let point = (!fmt.integers_only).then_some(fmt.decimal);
-        let is_point = |c: Option<&u8>| point.is_some_and(|p| c == Some(&p));
+impl Number {
+    /// Parse `[blanks][minus][digits, with thousands separators][point
+    /// digits][suffix]`. A thousands separator may not follow another.
+    pub fn parse(s: &[u8], fmt: &NumberFormat) -> Number {
+        let at = |sym: Option<Symbol>, i: usize| sym.filter(|m| m.is_at(s, i)).map(|m| m.width());
+        let digit = |i: usize| s.get(i).is_some_and(u8::is_ascii_digit);
         let mut i = skip_blanks(s, 0);
-        let negative = s.get(i) == Some(&b'-');
-        if negative {
+        let negative = at(fmt.minus, i);
+        i += negative.unwrap_or(0);
+        while s.get(i) == Some(&b'0') {
             i += 1;
         }
         let mut int = Vec::new();
-        loop {
-            match s.get(i) {
-                Some(&d) if d.is_ascii_digit() => int.push(d),
-                Some(&t)
-                    if Some(t) == fmt.thousands
-                        && s.get(i + 1)
-                            .is_some_and(|n| n.is_ascii_digit() || is_point(Some(n))) => {}
-                _ => break,
-            }
-            i += 1;
-        }
-        let mut frac: &[u8] = &[];
-        if is_point(s.get(i)) {
-            let f_start = i + 1;
-            let mut j = f_start;
-            while j < s.len() && s[j].is_ascii_digit() {
-                j += 1;
-            }
-            frac = &s[f_start..j];
-            if !int.is_empty() || !frac.is_empty() {
-                i = j;
+        let mut after_separator = false;
+        while int.len() < MAX_DIGITS {
+            if digit(i) {
+                int.push(s[i]);
+                i += 1;
+                after_separator = false;
+            } else if let Some(n) = at(fmt.thousands, i).filter(|_| !after_separator) {
+                i += n;
+                after_separator = true;
+            } else {
+                break;
             }
         }
-        let leading = int.iter().take_while(|&&d| d == b'0').count();
-        int.drain(..leading);
-        let frac_len = frac.iter().rposition(|&d| d != b'0').map_or(0, |p| p + 1);
-        let frac = frac[..frac_len].to_vec();
-        let negative = negative && !(int.is_empty() && frac.is_empty());
-        (
-            Decimal {
-                negative,
-                int,
-                frac,
-            },
-            i,
-        )
-    }
-
-    fn is_zero(&self) -> bool {
-        self.int.is_empty() && self.frac.is_empty()
-    }
-
-    /// Summary bits (see [`Summary::Ordered`]) and whether they are exact.
-    fn bits(&self) -> (Bits, bool) {
-        let sign = if self.is_zero() {
-            Ordering::Equal
-        } else if self.negative {
-            Ordering::Less
-        } else {
-            Ordering::Greater
-        };
-        // 8 + 4 * 29 + 1 = 125 bits, shifted left once: 126 below the sign.
-        let (field, exact) = magnitude_bits(&self.int, &self.frac, 29);
-        (signed_bits(sign, field << 1, 126), exact)
-    }
-
-    fn cmp_magnitude(&self, other: &Decimal) -> Ordering {
-        self.int
-            .len()
-            .cmp(&other.int.len())
-            .then_with(|| self.int.cmp(&other.int))
-            .then_with(|| self.frac.cmp(&other.frac))
-    }
-}
-
-impl Ord for Decimal {
-    fn cmp(&self, other: &Decimal) -> Ordering {
-        match (self.negative, other.negative) {
-            (false, true) => Ordering::Greater,
-            (true, false) => Ordering::Less,
-            (false, false) => self.cmp_magnitude(other),
-            (true, true) => other.cmp_magnitude(self),
+        let mut frac = Vec::new();
+        if let Some(n) = at(fmt.point, i) {
+            i += n;
+            while digit(i) && frac.len() < MAX_DIGITS {
+                frac.push(s[i]);
+                i += 1;
+            }
+            let keep = frac.iter().rposition(|&d| d != b'0').map_or(0, |p| p + 1);
+            frac.truncate(keep);
         }
-    }
-}
-
-impl PartialOrd for Decimal {
-    fn partial_cmp(&self, other: &Decimal) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-// --- -h --------------------------------------------------------------------
-
-/// Sign, then SI suffix, then value (suffix and value inverted for negatives).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Human {
-    sign: i8,
-    suffix: u8,
-    magnitude: Decimal,
-}
-
-impl Human {
-    pub fn parse(s: &[u8], fmt: &NumberFormat) -> Human {
-        let (mut value, end) = Decimal::parse(s, fmt);
-        let suffix = match s.get(end) {
+        let suffix = match s.get(i) {
             Some(b'k') => 1,
             Some(&c) => b"KMGTPEZY"
                 .iter()
@@ -359,53 +289,79 @@ impl Human {
                 .map_or(0, |p| p as u8 + 1),
             None => 0,
         };
-        let sign = if value.is_zero() {
+        let sign = if int.is_empty() && frac.is_empty() {
             0
-        } else if value.negative {
+        } else if negative.is_some() {
             -1
         } else {
             1
         };
-        value.negative = false;
-        Human {
+        Number {
             sign,
+            int,
+            frac,
             suffix,
-            magnitude: value,
         }
     }
-}
 
-impl Human {
-    /// Summary bits: sign, then suffix and magnitude (inverted when negative).
-    fn bits(&self) -> (Bits, bool) {
-        // 4 + 8 + 4 * 28 + 1 = 125 bits, shifted left once: 126 below the sign.
-        let (magnitude, exact) = magnitude_bits(&self.magnitude.int, &self.magnitude.frac, 28);
-        let field = ((Bits::from(self.suffix) << 121) | magnitude) << 1;
-        (
-            signed_bits(self.sign.cmp(&0), field, 126),
-            exact || self.sign == 0,
+    /// The integer part as sort's hint holds it (wcstoull), `None` when it
+    /// overflows to ULLONG_MAX.
+    fn hint(&self) -> Option<u64> {
+        let mut n: u64 = 0;
+        for &d in &self.int {
+            n = n.checked_mul(10)?.checked_add(u64::from(d - b'0'))?;
+        }
+        (n != u64::MAX).then_some(n)
+    }
+
+    /// sort's `numcoll_impl`: no digits sorts as zero; negatives first; with
+    /// `suffix` (-h) the suffix decides next; then the integer values, and
+    /// on a tie the digit strings (integer length, integer, fraction). The
+    /// two differ only for integers with leading zeros, which a thousands
+    /// separator can leave (`,05` is 5, but after every other 5).
+    pub fn compare(&self, other: &Number, suffix: bool) -> Ordering {
+        let (a, b) = (self, other);
+        if a.sign == 0 || b.sign == 0 {
+            return a.sign.cmp(&b.sign);
+        }
+        if a.sign != b.sign {
+            return a.sign.cmp(&b.sign);
+        }
+        let flip = |o: Ordering| if a.sign < 0 { o.reverse() } else { o };
+        if suffix && a.suffix != b.suffix {
+            return flip(a.suffix.cmp(&b.suffix));
+        }
+        if let (Some(x), Some(y)) = (a.hint(), b.hint())
+            && x != y
+        {
+            return flip(x.cmp(&y));
+        }
+        flip(
+            a.int
+                .len()
+                .cmp(&b.int.len())
+                .then_with(|| a.int.cmp(&b.int))
+                .then_with(|| a.frac.cmp(&b.frac)),
         )
     }
-}
 
-impl Ord for Human {
-    fn cmp(&self, other: &Human) -> Ordering {
-        self.sign.cmp(&other.sign).then_with(|| {
-            if self.sign == 0 {
-                return Ordering::Equal;
-            }
-            let ord = self
-                .suffix
-                .cmp(&other.suffix)
-                .then_with(|| self.magnitude.cmp(&other.magnitude));
-            if self.sign < 0 { ord.reverse() } else { ord }
-        })
-    }
-}
-
-impl PartialOrd for Human {
-    fn partial_cmp(&self, other: &Human) -> Option<Ordering> {
-        Some(self.cmp(other))
+    /// Summary bits (see [`Summary::Ordered`]) and whether they are exact,
+    /// or `None` for an integer with leading zeros, which orders by value
+    /// first and so doesn't fit the digit-string summary.
+    fn bits(&self, suffix: bool) -> Option<(Bits, bool)> {
+        if self.int.first() == Some(&b'0') {
+            return None;
+        }
+        let sign = self.sign.cmp(&0);
+        if !suffix {
+            // 8 + 4 * 29 + 1 = 125 bits, shifted left once: 126 below the sign.
+            let (field, exact) = magnitude_bits(&self.int, &self.frac, 29);
+            return Some((signed_bits(sign, field << 1, 126), exact));
+        }
+        // 4 + 8 + 4 * 28 + 1 = 125 bits, shifted left once: 126 below the sign.
+        let (magnitude, exact) = magnitude_bits(&self.int, &self.frac, 28);
+        let field = ((Bits::from(self.suffix) << 121) | magnitude) << 1;
+        Some((signed_bits(sign, field, 126), exact || self.sign == 0))
     }
 }
 
@@ -456,13 +412,34 @@ impl General {
         }
     }
 
-    /// Parse the longest strtod prefix after leading whitespace, with
-    /// `decimal` as the decimal point.
-    pub fn parse(s: &[u8], decimal: u8) -> General {
-        let mut i = 0;
-        while i < s.len() && s[i].is_ascii_whitespace() {
-            i += 1;
+    /// Parse as sort's `bwstod`: after leading blanks, a key that doesn't
+    /// start with a printable character is not a number; otherwise the
+    /// longest strtod prefix, with the locale's decimal point.
+    pub fn parse(s: &[u8], cx: &Context) -> General {
+        let mut i = skip_blanks(s, 0);
+        let printable = if cx.utf8 {
+            first_char(&s[i..]).is_some_and(ctype::is_wprint)
+        } else {
+            s.get(i).is_some_and(|&b| ctype::is_print(b))
+        };
+        if !printable {
+            return General::NotNumber;
         }
+        // Then strtod (wcstod in UTF-8) skips white space, Unicode spaces
+        // like U+00A0 included.
+        loop {
+            if cx.utf8 {
+                match first_char(&s[i..]) {
+                    Some(c) if ctype::is_wspace(c) => i += c.len_utf8(),
+                    _ => break,
+                }
+            } else if s.get(i).is_some_and(|&b| ctype::is_space(b)) {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        let decimal = cx.numbers.decimal;
         let negative = s.get(i) == Some(&b'-');
         if matches!(s.get(i), Some(b'-' | b'+')) {
             i += 1;
@@ -481,10 +458,8 @@ impl General {
             if len == 0 {
                 return General::NotNumber;
             }
-            let text: String = rest[..len]
-                .iter()
-                .map(|&b| if b == decimal { '.' } else { b as char })
-                .collect();
+            let text = String::from_utf8_lossy(&rest[..len])
+                .replace(&*String::from_utf8_lossy(decimal.as_bytes()), ".");
             let v: f64 = text.parse().unwrap_or(0.0);
             if v.is_infinite() {
                 return if negative {
@@ -499,16 +474,26 @@ impl General {
     }
 }
 
+/// The UTF-8 character `s` starts with, if any.
+fn first_char(s: &[u8]) -> Option<char> {
+    let head = &s[..s.len().min(4)];
+    let valid = match std::str::from_utf8(head) {
+        Ok(t) => t,
+        Err(e) => std::str::from_utf8(&head[..e.valid_up_to()]).ok()?,
+    };
+    valid.chars().next()
+}
+
 /// Length of `digits[.digits][e[+-]digits]` with at least one mantissa digit.
-fn decimal_prefix(s: &[u8], decimal: u8) -> usize {
+fn decimal_prefix(s: &[u8], decimal: Symbol) -> usize {
     let digits = |from: usize| s[from..].iter().take_while(|b| b.is_ascii_digit()).count();
     let int = digits(0);
     let mut i = int;
     let mut frac = 0;
-    if s.get(i) == Some(&decimal) {
-        frac = digits(i + 1);
+    if decimal.is_at(s, i) {
+        frac = digits(i + decimal.width());
         if int + frac > 0 {
-            i += 1 + frac;
+            i += decimal.width() + frac;
         }
     }
     if int + frac == 0 {
@@ -528,7 +513,7 @@ fn decimal_prefix(s: &[u8], decimal: u8) -> usize {
 }
 
 /// `0x` hex floats: hex digits, optional fraction, optional `p` exponent.
-fn parse_hex(s: &[u8], decimal: u8) -> Option<f64> {
+fn parse_hex(s: &[u8], decimal: Symbol) -> Option<f64> {
     let body = s.strip_prefix(b"0x").or_else(|| s.strip_prefix(b"0X"))?;
     let hex = |b: &u8| (*b as char).to_digit(16);
     let mut value = 0f64;
@@ -539,9 +524,9 @@ fn parse_hex(s: &[u8], decimal: u8) -> Option<f64> {
         i += 1;
         any = true;
     }
-    if body.get(i) == Some(&decimal) {
+    if decimal.is_at(body, i) {
         let mut scale = 1.0 / 16.0;
-        i += 1;
+        i += decimal.width();
         while let Some(d) = body.get(i).and_then(hex) {
             value += f64::from(d) * scale;
             scale /= 16.0;
@@ -701,78 +686,181 @@ fn verrevcmp(a: &[u8], b: &[u8]) -> Ordering {
 mod tests {
     use super::*;
 
-    const C: NumberFormat = NumberFormat {
-        decimal: b'.',
-        thousands: None,
-        integers_only: false,
-    };
-    const US: NumberFormat = NumberFormat {
-        decimal: b'.',
-        thousands: Some(b','),
-        integers_only: false,
-    };
-    const DE: NumberFormat = NumberFormat {
-        decimal: b',',
-        thousands: Some(b'.'),
-        integers_only: false,
-    };
+    fn format(point: u8, thousands: Option<u8>) -> NumberFormat {
+        NumberFormat {
+            point: Some(Symbol::byte(point)),
+            thousands: thousands.map(Symbol::byte),
+            decimal: Symbol::byte(point),
+            ..NumberFormat::default()
+        }
+    }
 
-    fn dec(s: &str) -> Decimal {
-        Decimal::parse(s.as_bytes(), &C).0
+    fn cmp_with(fmt: &NumberFormat, a: &str, b: &str, suffix: bool) -> Ordering {
+        Number::parse(a.as_bytes(), fmt).compare(&Number::parse(b.as_bytes(), fmt), suffix)
+    }
+
+    fn n(a: &str, b: &str) -> Ordering {
+        cmp_with(&NumberFormat::default(), a, b, false)
+    }
+
+    fn us(a: &str, b: &str) -> Ordering {
+        cmp_with(&format(b'.', Some(b',')), a, b, false)
+    }
+
+    use Ordering::{Equal, Greater, Less};
+
+    #[test]
+    fn numbers() {
+        assert_eq!(n("-0", "0"), Equal);
+        assert_eq!(n("abc", ""), Equal);
+        assert_eq!(n("007.50", "7.5"), Equal);
+        assert_eq!(n("-", "0"), Equal);
+        assert_eq!(n("-2", "-1.5"), Less);
+        assert_eq!(n(".5", "1"), Less);
+        assert_eq!(n("10", "9.99"), Greater);
+        assert_eq!(n("-1", ""), Less);
+        assert_eq!(n("", "0.1"), Less);
+        assert_eq!(n("99999999999999999999", "99999999999999999998"), Greater);
+        assert_eq!(n("18446744073709551616", "18446744073709551615"), Greater);
     }
 
     #[test]
-    fn decimals() {
-        assert_eq!(dec("-0"), dec("0"));
-        assert_eq!(dec("abc"), dec(""));
-        assert_eq!(dec("007.50"), dec("7.5"));
-        assert_eq!(dec("-"), dec("0"));
-        assert!(dec("-2") < dec("-1.5"));
-        assert!(dec(".5") < dec("1"));
-        assert!(dec("10") > dec("9.99"));
-        assert_eq!(Decimal::parse(b" 12.5x", &C).1, 5);
-        assert_eq!(Decimal::parse(b"1.x", &C).1, 2);
-        assert_eq!(Decimal::parse(b".x", &C).1, 0);
+    fn numbers_keep_128_digits() {
+        let long = |last: char| format!("{}{last}", "1".repeat(128));
+        assert_eq!(n(&long('1'), &long('2')), Equal);
+        let frac = |last: char| format!("0.{}{last}", "1".repeat(128));
+        assert_eq!(n(&frac('1'), &frac('2')), Equal);
     }
 
     #[test]
-    fn decimals_with_locale_separators() {
-        let us = |s: &str| Decimal::parse(s.as_bytes(), &US).0;
-        assert_eq!(us("1,000"), dec("1000"));
-        assert_eq!(us(",5"), dec("5"));
-        assert_eq!(us("1,,0"), dec("1"));
-        assert_eq!(us(",.9"), dec("0.9"));
-        assert_eq!(us("1,.5"), dec("1.5"));
-        assert_eq!(us("1,"), dec("1"));
-        assert_eq!(us("-1,000.5"), dec("-1000.5"));
-        assert_eq!(us("1.5,0"), dec("1.5"), "no separators in the fraction");
-        let de = |s: &str| Decimal::parse(s.as_bytes(), &DE).0;
-        assert_eq!(de("1.234,5"), dec("1234.5"));
-        assert_eq!(de("1,5"), dec("1.5"));
+    fn thousands_separators_follow_sort() {
+        assert_eq!(us("1,000", "1000"), Equal);
+        assert_eq!(us("1,,0", "1"), Equal, "not after another");
+        assert_eq!(us(",.9", "0.9"), Equal);
+        assert_eq!(us("1,.5", "1.5"), Equal);
+        assert_eq!(us("1,", "1"), Equal);
+        assert_eq!(us("-1,000.5", "-1000.5"), Equal);
+        assert_eq!(us("1.5,0", "1.5"), Equal, "none in the fraction");
+        // Leading zeros are dropped only before a separator, so these keep
+        // one: they order by value, then after the plain numbers equal to it.
+        assert_eq!(us(",05", "5"), Greater);
+        assert_eq!(us(",05", "5.9"), Greater);
+        assert_eq!(us(",05", "6"), Less);
+        assert_eq!(us("0,0", "0"), Greater);
+        assert_eq!(us("0,0", "0.5"), Greater);
+        assert_eq!(us("0,0", "1"), Less);
+        let de = format(b',', Some(b'.'));
+        assert_eq!(cmp_with(&de, "1.234,5", "1234,5", false), Equal);
+        assert_eq!(cmp_with(&de, "1,5", "1,4", false), Greater);
         let whole = NumberFormat {
-            integers_only: true,
-            ..US
+            point: None,
+            ..format(b'.', Some(b','))
         };
-        assert_eq!(Decimal::parse(b"1,000.5", &whole), (dec("1000"), 5));
-        assert_eq!(Decimal::parse(b"1,.5", &whole).0, dec("1"));
+        assert_eq!(cmp_with(&whole, "1,000.5", "1000", false), Equal);
+        assert_eq!(cmp_with(&whole, "1,.5", "1", false), Equal);
+    }
+
+    #[test]
+    fn locale_symbols_may_be_multibyte() {
+        let sym = |s: &str| Symbol::first(s.as_bytes(), true);
+        let sv = NumberFormat {
+            point: sym(","),
+            thousands: sym("\u{a0}"),
+            minus: sym("\u{2212}"),
+            decimal: Symbol::byte(b','),
+        };
+        let c = |a: &str, b: &str| cmp_with(&sv, a, b, false);
+        assert_eq!(c("1\u{a0}000", "1000"), Equal);
+        assert_eq!(c("\u{2212}5", "0"), Less);
+        assert_eq!(c("-5", "0"), Equal, "'-' is not this locale's minus");
+        assert_eq!(c("1,5", "1,4"), Greater);
+        assert_eq!(Symbol::first(b"", true), None);
+        assert_eq!(Symbol::first(b"\xff", true), None);
+        assert_eq!(Symbol::first(b"\xf3\xae", false), Some(Symbol::byte(0xf3)));
+        let fmt = NumberFormat::default().separated_by(b'-');
+        assert_eq!(
+            cmp_with(&fmt, "-5", "0", false),
+            Equal,
+            "-t - disables minus"
+        );
+        assert_eq!(fmt.separated_by(b'.').point, None);
     }
 
     #[test]
     fn human() {
-        let h = |s: &str| Human::parse(s.as_bytes(), &C);
-        assert!(h("2") < h("1K"));
-        assert!(h("1K") == h("1k"));
-        assert!(h("999K") < h("1M"));
-        assert!(h("-1M") < h("-1K"));
-        assert!(h("-2K") < h("-1K"));
-        assert!(h("0K") == h("K"));
-        assert!(h("1Y") > h("1Z"));
-        assert!(Human::parse(b"1,0K", &US) > h("2K"));
+        let h = |a: &str, b: &str| cmp_with(&NumberFormat::default(), a, b, true);
+        assert_eq!(h("2", "1K"), Less);
+        assert_eq!(h("1K", "1k"), Equal);
+        assert_eq!(h("999K", "1M"), Less);
+        assert_eq!(h("-1M", "-1K"), Less);
+        assert_eq!(h("-2K", "-1K"), Less);
+        assert_eq!(h("0K", "K"), Equal);
+        assert_eq!(h("1Y", "1Z"), Greater);
+        assert_eq!(
+            cmp_with(&format(b'.', Some(b',')), "1,0K", "2K", true),
+            Greater
+        );
+        assert_eq!(
+            cmp_with(&format(b'.', Some(b',')), "1,K", "2", true),
+            Greater
+        );
+    }
+
+    #[test]
+    fn summaries_agree_with_comparison() {
+        let fmt = format(b'.', Some(b','));
+        let keys = [
+            "",
+            "0",
+            "-0",
+            "1",
+            "-1",
+            "1.5",
+            "-1.5",
+            "10",
+            "9.99",
+            "1,000",
+            ",05",
+            "0,0",
+            "5",
+            "5.9",
+            "6",
+            "1K",
+            "2M",
+            "-3G",
+            "99999999999999999999999999999999",
+        ];
+        for suffix in [false, true] {
+            for a in keys {
+                for b in keys {
+                    let (x, y) = (
+                        Number::parse(a.as_bytes(), &fmt),
+                        Number::parse(b.as_bytes(), &fmt),
+                    );
+                    let (Some((bx, ex)), Some((by, ey))) = (x.bits(suffix), y.bits(suffix)) else {
+                        continue;
+                    };
+                    let ord = x.compare(&y, suffix);
+                    match bx.cmp(&by) {
+                        Equal if ex && ey => assert_eq!(ord, Equal, "{a} {b} {suffix}"),
+                        Equal => {}
+                        bits => assert_eq!(ord, bits, "{a} {b} {suffix}"),
+                    }
+                }
+            }
+        }
+        assert_eq!(Number::parse(b",05", &fmt).bits(false), None);
     }
 
     #[test]
     fn general() {
-        let g = |s: &str| General::parse(s.as_bytes(), b'.');
+        let cx = Context {
+            seed: 0,
+            utf8: false,
+            numbers: NumberFormat::default(),
+            collator: Collator::Bytes,
+        };
+        let g = |s: &str| General::parse(s.as_bytes(), &cx);
         assert_eq!(g("abc"), General::NotNumber);
         assert_eq!(g("-nan"), General::NaN);
         assert_eq!(g("  -INFINITY"), General::Number(f64::NEG_INFINITY));
@@ -785,11 +873,35 @@ mod tests {
         assert_eq!(g("0X1p-1"), General::Number(0.5));
         assert_eq!(g("0xg"), General::Number(0.0));
         assert_eq!(g("."), General::NotNumber);
+        // After blanks the key must start with a printable character.
+        assert_eq!(g("\x0c5"), General::NotNumber);
+        assert_eq!(g("\r5"), General::NotNumber);
+        assert_eq!(g(" \t5"), General::Number(5.0));
+        assert_eq!(
+            g(" \x0b5"),
+            General::NotNumber,
+            "a vertical tab is not a blank"
+        );
         assert_eq!(g("-0").compare(&g("0")), Ordering::Equal);
         assert_eq!(g("nan").compare(&g("abc")), Ordering::Greater);
-        assert_eq!(General::parse(b"1,5e1", b','), General::Number(15.0));
-        assert_eq!(General::parse(b"1.5", b','), General::Number(1.0));
-        assert_eq!(General::parse(b"0x1,8", b','), General::Number(1.5));
+        let comma = Context {
+            numbers: format(b',', None),
+            ..cx
+        };
+        let g = |s: &str| General::parse(s.as_bytes(), &comma);
+        assert_eq!(g("1,5e1"), General::Number(15.0));
+        assert_eq!(g("1.5"), General::Number(1.0));
+        assert_eq!(g("0x1,8"), General::Number(1.5));
+        let two_bytes = Context {
+            numbers: NumberFormat {
+                decimal: Symbol::first("\u{66b}".as_bytes(), true).unwrap(),
+                ..NumberFormat::default()
+            },
+            ..cx
+        };
+        let g = |s: &str| General::parse(s.as_bytes(), &two_bytes);
+        assert_eq!(g("1\u{66b}5"), General::Number(1.5));
+        assert_eq!(g("1.5"), General::Number(1.0));
     }
 
     #[test]

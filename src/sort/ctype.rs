@@ -16,12 +16,14 @@ use std::sync::OnceLock;
 unsafe extern "C" {
     fn iswalnum(wc: u32) -> libc::c_int;
     fn iswprint(wc: u32) -> libc::c_int;
+    fn iswspace(wc: u32) -> libc::c_int;
     fn towupper(wc: u32) -> u32;
 }
 
 struct Tables {
     alnum: [bool; 256],
     print: [bool; 256],
+    space: [bool; 256],
     upper: [u8; 256],
     /// Abbreviated month names, uppercased; empty when the locale has none.
     months: [Vec<u8>; 12],
@@ -42,6 +44,7 @@ fn read(utf8: bool) -> Tables {
     let mut t = Tables {
         alnum: [false; 256],
         print: [false; 256],
+        space: [false; 256],
         upper: [0; 256],
         months: Default::default(),
     };
@@ -51,6 +54,7 @@ fn read(utf8: bool) -> Tables {
         unsafe {
             t.alnum[usize::from(b)] = libc::isalnum(c) != 0;
             t.print[usize::from(b)] = libc::isprint(c) != 0;
+            t.space[usize::from(b)] = libc::isspace(c) != 0;
             t.upper[usize::from(b)] = u8::try_from(libc::toupper(c)).unwrap_or(b);
         }
     }
@@ -94,6 +98,11 @@ pub fn is_print(b: u8) -> bool {
     tables().print[usize::from(b)]
 }
 
+/// `isspace` in the locale.
+pub fn is_space(b: u8) -> bool {
+    tables().space[usize::from(b)]
+}
+
 /// `toupper` in the locale.
 pub fn to_upper(b: u8) -> u8 {
     tables().upper[usize::from(b)]
@@ -109,6 +118,12 @@ pub fn is_walnum(c: char) -> bool {
 pub fn is_wprint(c: char) -> bool {
     // SAFETY: iswprint accepts any wide character value.
     unsafe { iswprint(u32::from(c)) != 0 }
+}
+
+/// `iswspace` in the locale.
+pub fn is_wspace(c: char) -> bool {
+    // SAFETY: iswspace accepts any wide character value.
+    unsafe { iswspace(u32::from(c)) != 0 }
 }
 
 /// `towupper` in the locale.
@@ -137,6 +152,7 @@ mod tests {
         assert_eq!(months()[11], b"DEC");
         assert!(is_walnum('a') && !is_walnum('-'));
         assert!(is_wprint('a') && !is_wprint('\u{7}'));
+        assert!(is_space(b'\x0b') && !is_space(b'a') && is_wspace('\t') && !is_wspace('a'));
         assert_eq!(upper('a'), 'A');
     }
 }

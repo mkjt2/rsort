@@ -330,14 +330,73 @@ mod oracle {
     }
 
     #[test]
+    fn numbers_use_each_locales_symbols() {
+        // sv_FI: U+00A0 groups and U+2212 is the minus ('-' is not); fa_IR:
+        // Arabic decimal and group separators; de_DE: '.' groups, ',' point.
+        let input = "\u{2212}5\n-5\n1\u{a0}000\n2 000\n1,5\n1.5\n3\u{66b}5\n3\u{66c}500\n,05\n0,0\n0\n5\n\u{a0}7\n\u{202f}8e1\n";
+        for locale in [
+            "en_US.UTF-8",
+            "sv_FI.UTF-8",
+            "fa_IR.UTF-8",
+            "de_DE.UTF-8",
+            "fr_FR.UTF-8",
+        ] {
+            for args in [
+                &["-n"][..],
+                &["-h"],
+                &["-g"],
+                &["-s", "-n"],
+                &["-rn"],
+                &["-un"],
+                &["-t", ",", "-n"],
+                &["-t", "-", "-n"],
+            ] {
+                same_as_sort(&[("LANG", locale)], args, input.as_bytes());
+            }
+        }
+        // GNUSORT_NUMERIC_COMPATIBILITY keeps the symbols whatever -t is.
+        same_as_sort(
+            &[
+                ("LANG", "en_US.UTF-8"),
+                ("GNUSORT_NUMERIC_COMPATIBILITY", "1"),
+            ],
+            &["-t", ",", "-k1n"],
+            b"1,5\n1,4\n-2\n",
+        );
+        same_as_sort(
+            &[("LANG", "C"), ("GNUSORT_NUMERIC_COMPATIBILITY", "1")],
+            &["-t", "-", "-k1n"],
+            b"-2\n-1\n3\n",
+        );
+    }
+
+    #[test]
+    fn keys_strxfrm_misorders_still_collate_like_strcoll() {
+        // macOS strxfrm disagrees with strcoll on tabs and on characters a
+        // locale doesn't weigh, so such keys must compare with strcoll.
+        for locale in ["en_US.UTF-8", "de_DE.UTF-8", "en_US.ISO8859-15"] {
+            for input in [
+                "B\nb\t\n",
+                "b\t\nB\n",
+                "\u{4e2d}a\nZ\na\u{4e2d}\n\u{4e2d}\n",
+                "z\t\t\nZ\nz\n",
+            ] {
+                for args in [&[][..], &["-k1d"], &["-r"], &["-u"]] {
+                    same_as_sort(&[("LANG", locale)], args, input.as_bytes());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_multibyte_decimal_point_counts_by_its_first_byte() {
         // zh_HK.Big5HKSCS is single-byte on macOS, with a two-byte decimal
         // point: "." is then not one.
-        for args in [&["-n"][..], &["-h"], &["-rn"], &["-s", "-n"]] {
+        for args in [&["-n"][..], &["-h"], &["-g"], &["-rn"], &["-s", "-n"]] {
             same_as_sort(
                 &[("LANG", "zh_HK.Big5HKSCS")],
                 args,
-                b"jan\n.2\n1.5\n0.1\n10\n",
+                b"jan\n.2\n1.5\n0.1\n10\n1\xf3\xae5\n1\xf35\n",
             );
         }
     }

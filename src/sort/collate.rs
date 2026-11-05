@@ -36,23 +36,95 @@ pub fn category_name(env: &dyn Fn(&str) -> Option<String>, var: &str) -> String 
         .unwrap_or_else(|| "C".into())
 }
 
-/// The decimal point and thousands separator used by -n, -h and -g.
+/// One character of the number format, as sort holds it in a wint_t: a
+/// byte, or one UTF-8 character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Symbol {
+    bytes: [u8; 4],
+    len: u8,
+}
+
+impl Symbol {
+    pub const fn byte(b: u8) -> Symbol {
+        Symbol {
+            bytes: [b, 0, 0, 0],
+            len: 1,
+        }
+    }
+
+    /// The first character of `s` (UTF-8 when `utf8`, else the first byte),
+    /// as mbtowc reads it; `None` when there is none.
+    pub fn first(s: &[u8], utf8: bool) -> Option<Symbol> {
+        let n = if utf8 {
+            let head = &s[..s.len().min(4)];
+            let valid = match std::str::from_utf8(head) {
+                Ok(t) => t,
+                Err(e) => std::str::from_utf8(&head[..e.valid_up_to()]).ok()?,
+            };
+            valid.chars().next()?.len_utf8()
+        } else {
+            usize::from(!s.is_empty())
+        };
+        if n == 0 || s[0] == 0 {
+            return None;
+        }
+        let mut bytes = [0; 4];
+        bytes[..n].copy_from_slice(&s[..n]);
+        Some(Symbol {
+            bytes,
+            len: n as u8,
+        })
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.len)]
+    }
+
+    /// Its length in bytes.
+    pub fn width(&self) -> usize {
+        usize::from(self.len)
+    }
+
+    /// Whether `s` has this symbol at `i`.
+    pub fn is_at(&self, s: &[u8], i: usize) -> bool {
+        s.get(i..)
+            .is_some_and(|rest| rest.starts_with(self.as_bytes()))
+    }
+}
+
+/// The locale's number symbols, as sort reads them from localeconv.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NumberFormat {
-    pub decimal: u8,
-    pub thousands: Option<u8>,
-    /// -n and -h read no fraction: sort ignores the decimal point there
-    /// when `-t` is the decimal point (-g still uses it).
-    pub integers_only: bool,
+    /// -n and -h: the decimal point, thousands separator and minus sign.
+    /// `None` disables one, as a `-t` equal to it does.
+    pub point: Option<Symbol>,
+    pub thousands: Option<Symbol>,
+    pub minus: Option<Symbol>,
+    /// -g (strtod): the whole decimal point string, whatever `-t` is.
+    pub decimal: Symbol,
 }
 
 impl Default for NumberFormat {
     fn default() -> Self {
         NumberFormat {
-            decimal: b'.',
+            point: Some(Symbol::byte(b'.')),
             thousands: None,
-            integers_only: false,
+            minus: Some(Symbol::byte(b'-')),
+            decimal: Symbol::byte(b'.'),
         }
+    }
+}
+
+impl NumberFormat {
+    /// What `-t SEP` does to the symbols in sort (unless
+    /// GNUSORT_NUMERIC_COMPATIBILITY is set): one equal to it is disabled.
+    pub fn separated_by(mut self, sep: u8) -> NumberFormat {
+        for sym in [&mut self.point, &mut self.thousands, &mut self.minus] {
+            if *sym == Some(Symbol::byte(sep)) {
+                *sym = None;
+            }
+        }
+        self
     }
 }
 
@@ -63,12 +135,16 @@ pub struct Locale {
     pub numbers: NumberFormat,
     /// LC_CTYPE is UTF-8: `-k` offsets and `-d`/`-f`/`-i` go by character.
     pub utf8: bool,
+    /// GNUSORT_NUMERIC_COMPATIBILITY is set: `-t` leaves the number symbols
+    /// alone.
+    pub gnu_numbers: bool,
 }
 
 impl Locale {
     /// Set every category from the environment as `setlocale(LC_ALL, "")`
     /// does: if any of them names a locale that doesn't exist, all stay C.
     pub fn from_env(env: &dyn Fn(&str) -> Option<String>) -> Locale {
+        let gnu_numbers = env("GNUSORT_NUMERIC_COMPATIBILITY").is_some();
         // SAFETY: setlocale is called with valid NUL-terminated strings
         // before any other thread exists or compares text.
         let set = |category, name: &str| {
@@ -83,7 +159,10 @@ impl Locale {
                 set(category, "C");
             }
             super::ctype::init(false);
-            return Locale::default();
+            return Locale {
+                gnu_numbers,
+                ..Locale::default()
+            };
         }
         // SAFETY: nl_langinfo and setlocale(…, NULL) return NUL-terminated
         // strings that stay valid until the next setlocale; both are copied.
@@ -107,38 +186,54 @@ impl Locale {
             collator,
             numbers: number_format(utf8),
             utf8,
+            gnu_numbers,
         }
     }
 }
 
-/// The current LC_NUMERIC separators, as sort reads them with mbtowc: in a
-/// single-byte locale the first byte (Big5HKSCS's two-byte decimal point
-/// becomes its first byte); in UTF-8 one ASCII character (others are not
-/// supported).
+/// The current LC_NUMERIC symbols, as sort reads them with mbtowc: the
+/// first character of each (in a single-byte locale its first byte, so
+/// Big5HKSCS's two-byte decimal point counts by its first byte), or the
+/// default ('.', none, '-') when empty.
 fn number_format(utf8: bool) -> NumberFormat {
     // SAFETY: localeconv returns a pointer to static data that stays valid
     // until the next setlocale/localeconv call; we copy out of it at once.
-    let single_byte = |ptr: *const libc::c_char| {
-        if ptr.is_null() {
-            return None;
-        }
-        // SAFETY: localeconv strings are NUL-terminated.
-        match unsafe { std::ffi::CStr::from_ptr(ptr) }.to_bytes() {
-            [b] => Some(*b),
-            [b, ..] if !utf8 => Some(*b),
-            _ => None,
-        }
-    };
     let conv = unsafe { libc::localeconv() };
     if conv.is_null() {
         return NumberFormat::default();
     }
+    let bytes = |ptr: *const libc::c_char| -> Vec<u8> {
+        if ptr.is_null() {
+            return Vec::new();
+        }
+        // SAFETY: localeconv strings are NUL-terminated.
+        unsafe { CStr::from_ptr(ptr) }.to_bytes().to_vec()
+    };
     // SAFETY: `conv` is non-null and points to a valid lconv.
-    let (decimal, thousands) = unsafe { ((*conv).decimal_point, (*conv).thousands_sep) };
+    let (decimal, thousands, minus) = unsafe {
+        (
+            bytes((*conv).decimal_point),
+            bytes((*conv).thousands_sep),
+            bytes((*conv).negative_sign),
+        )
+    };
+    let default = NumberFormat::default();
     NumberFormat {
-        decimal: single_byte(decimal).unwrap_or(b'.'),
-        thousands: single_byte(thousands),
-        integers_only: false,
+        point: Symbol::first(&decimal, utf8).or(default.point),
+        thousands: Symbol::first(&thousands, utf8),
+        minus: Symbol::first(&minus, utf8).or(default.minus),
+        // strtod matches the whole string; longer than 4 bytes never occurs.
+        decimal: match decimal.len() {
+            1..=4 => {
+                let mut bytes = [0; 4];
+                bytes[..decimal.len()].copy_from_slice(&decimal);
+                Symbol {
+                    bytes,
+                    len: decimal.len() as u8,
+                }
+            }
+            _ => default.decimal,
+        },
     }
 }
 
@@ -229,6 +324,60 @@ pub fn xfrm_from(out: &mut Vec<u8>, start: usize, end: usize) -> Option<(usize, 
         load_c_string(src, &out[start..end]);
         xfrm_into(src, out)
     })
+}
+
+/// Whether strxfrm keys may stand in for strcoll on `key`. macOS strxfrm
+/// disagrees with strcoll on tabs in every UTF-8 locale tried, on bytes
+/// from 0x80 in single-byte ones (en_US.ISO8859-15), and in kk_KZ.PT154 even
+/// on ASCII. Scans of every BMP and plane-1 character in several UTF-8
+/// locales found no other disagreement (`Å`, whose strxfrm copies the input,
+/// is caught by [`xfrm`]). So: in UTF-8 any key without control characters,
+/// otherwise printable ASCII only, and only if the locale passes
+/// [`xfrm_agrees`].
+pub fn xfrm_usable(key: &[u8], utf8: bool) -> bool {
+    static AGREES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let plain = if utf8 {
+        key.iter().all(|&b| b >= 0x20 && b != 0x7f)
+    } else {
+        key.iter().all(|&b| (0x20..0x7f).contains(&b))
+    };
+    plain && *AGREES.get_or_init(xfrm_agrees)
+}
+
+/// Compare strxfrm with strcoll on a few hundred printable-ASCII pairs, most
+/// of them one edit apart, as a scan of every macOS locale found the bad
+/// one (kk_KZ.PT154) with these.
+fn xfrm_agrees() -> bool {
+    let mut state: u32 = 0x9e37_79b9;
+    let mut next = move |n: u32| {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        state % n
+    };
+    let (mut xa, mut xb) = (Vec::new(), Vec::new());
+    for _ in 0..400 {
+        let a: Vec<u8> = (0..next(9)).map(|_| 0x20 + next(95) as u8).collect();
+        let mut b = a.clone();
+        match (next(3), b.len()) {
+            (0, _) => b.insert(next(b.len() as u32 + 1) as usize, 0x20 + next(95) as u8),
+            (1, n) if n > 0 => {
+                b.remove(next(n as u32) as usize);
+            }
+            (_, n) if n > 0 => b[next(n as u32) as usize] = 0x20 + next(95) as u8,
+            _ => b = (0..next(9)).map(|_| 0x20 + next(95) as u8).collect(),
+        }
+        xa.clear();
+        xb.clear();
+        let (Some((s, e)), Some((t, f))) = (xfrm(&a, &mut xa), xfrm(&b, &mut xb)) else {
+            continue;
+        };
+        let by_xfrm = xa[s..e].cmp(&xb[t..f]);
+        if by_xfrm != Ordering::Equal && by_xfrm != strcoll(&a, &b) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Like [`xfrm_from`] for a key that is not in `out`.
@@ -353,7 +502,7 @@ mod tests {
                 "{pairs:?}"
             );
         }
-        assert_eq!(NumberFormat::default().decimal, b'.');
+        assert_eq!(NumberFormat::default().point, Some(Symbol::byte(b'.')));
         assert_eq!(Collator::Bytes.compare(b"a", b"B"), Ordering::Greater);
     }
 
