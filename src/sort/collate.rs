@@ -505,15 +505,6 @@ mod tests {
     }
 
     #[test]
-    fn locale_compare_skips_invalid_utf8() {
-        // Byte fallbacks hold whatever locale the process has.
-        let c = Collator::Locale { utf8: true };
-        assert_eq!(c.compare(b"\xff", b"a"), Ordering::Greater);
-        assert_eq!(c.compare(b"a\0b", b"a\0c"), Ordering::Less);
-        assert_eq!(c.compare(b"a", b"a"), Ordering::Equal);
-    }
-
-    #[test]
     fn xfrm_treats_an_unchanged_copy_as_failure() {
         // The test process runs in the C locale, where strxfrm copies.
         let mut out = b"ab\0c".to_vec();

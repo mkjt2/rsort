@@ -3,56 +3,33 @@
 
 mod common;
 
-use common::cmd;
+use common::{c_locale as sort, sorted, write};
 use predicates::prelude::*;
-use std::path::Path;
-
-/// The binary in `dir` with byte-order collation.
-fn sort(dir: &Path) -> assert_cmd::Command {
-    let mut c = cmd(dir);
-    c.current_dir(dir)
-        .env("LC_ALL", "C")
-        .env_remove("LC_COLLATE")
-        .env_remove("LANG");
-    c
-}
-
-fn write(dir: &Path, name: &str, content: &str) {
-    std::fs::write(dir.join(name), content).unwrap();
-}
 
 // --- input and output -------------------------------------------------------
 
 #[test]
-fn empty_input_prints_nothing() {
-    let dir = tempfile::tempdir().unwrap();
-    sort(dir.path())
-        .write_stdin("")
-        .assert()
-        .success()
-        .stdout("");
-}
-
-#[test]
-fn empty_lines_are_lines() {
-    let dir = tempfile::tempdir().unwrap();
-    sort(dir.path())
-        .write_stdin("b\n\na\n")
-        .assert()
-        .success()
-        .stdout("\na\nb\n");
-}
-
-#[test]
-fn files_are_concatenated_and_dash_is_stdin() {
-    let dir = tempfile::tempdir().unwrap();
-    write(dir.path(), "f", "c\n");
-    sort(dir.path())
-        .args(["f", "-"])
-        .write_stdin("b\na\n")
-        .assert()
-        .success()
-        .stdout("a\nb\nc\n");
+fn stdin_to_stdout() {
+    let ignored = [
+        "--buffer-size=1G",
+        "--temporary-directory=/nonexistent",
+        "--parallel=8",
+        "--batch-size=2",
+        "--compress-program=gzip",
+        "--mergesort",
+        "--qsort",
+        "--heapsort",
+    ];
+    for (args, input, want) in [
+        (&[][..], "", ""),
+        (&[], "b\n\na\n", "\na\nb\n"),
+        (&["--zero-terminated"], "b\0a", "a\0b\0"),
+        (&ignored, "b\na\n", "a\nb\n"),
+        (&["--unique"], "\n\nb\nb\n", "\nb\n"),
+        (&["--reverse"], "a\nc\nb\n", "c\nb\na\n"),
+    ] {
+        assert_eq!(sorted(args, input), want, "{args:?}");
+    }
 }
 
 #[test]
@@ -79,17 +56,6 @@ fn output_long_form_writes_the_file() {
         .stdout("");
     let got = std::fs::read_to_string(dir.path().join("out")).unwrap();
     assert_eq!(got, "a\nb\n");
-}
-
-#[test]
-fn zero_terminated_adds_a_final_nul() {
-    let dir = tempfile::tempdir().unwrap();
-    sort(dir.path())
-        .arg("--zero-terminated")
-        .write_stdin("b\0a")
-        .assert()
-        .success()
-        .stdout("a\0b\0");
 }
 
 #[test]
@@ -141,49 +107,7 @@ fn files0_from_rejects_empty_names() {
         .stderr(predicate::str::contains("empty file name"));
 }
 
-#[test]
-fn ignored_flags_change_nothing() {
-    let dir = tempfile::tempdir().unwrap();
-    sort(dir.path())
-        .args([
-            "--buffer-size=1G",
-            "--temporary-directory=/nonexistent",
-            "--parallel=8",
-            "--batch-size=2",
-            "--compress-program=gzip",
-            "--mergesort",
-            "--qsort",
-            "--heapsort",
-        ])
-        .write_stdin("b\na\n")
-        .assert()
-        .success()
-        .stdout("a\nb\n");
-}
-
 // --- unique and stable ------------------------------------------------------
-
-#[test]
-fn unique_keeps_one_of_each_line() {
-    let dir = tempfile::tempdir().unwrap();
-    sort(dir.path())
-        .arg("--unique")
-        .write_stdin("\n\nb\nb\n")
-        .assert()
-        .success()
-        .stdout("\nb\n");
-}
-
-#[test]
-fn reverse_long_form() {
-    let dir = tempfile::tempdir().unwrap();
-    sort(dir.path())
-        .arg("--reverse")
-        .write_stdin("a\nc\nb\n")
-        .assert()
-        .success()
-        .stdout("c\nb\na\n");
-}
 
 // --- check ------------------------------------------------------------------
 

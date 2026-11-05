@@ -37,6 +37,7 @@
 
 mod common;
 
+use common::write;
 use std::path::Path;
 use std::process::Output;
 
@@ -55,12 +56,9 @@ fn run(tool: &str, dir: &Path, args: &[&str], stdin: &[u8]) -> Output {
     let mut c = if tool == "rsort" {
         common::cmd(dir)
     } else {
-        assert_cmd::Command::new(tool)
+        common::hermetic(assert_cmd::Command::new(tool), dir)
     };
-    c.current_dir(dir)
-        .env("LC_ALL", "C")
-        .env_remove("LC_COLLATE")
-        .env_remove("LANG")
+    c.env("LC_ALL", "C")
         .args(args)
         .write_stdin(stdin.to_vec())
         .output()
@@ -94,10 +92,6 @@ fn check_status(dir: &Path, args: &[&str], stdin: &[u8], code: i32) -> Vec<Strin
             String::from_utf8_lossy(&out.stderr).into_owned()
         })
         .collect()
-}
-
-fn write(dir: &Path, name: &str, content: &[u8]) {
-    std::fs::write(dir.join(name), content).unwrap();
 }
 
 fn read(path: impl AsRef<Path>) -> Vec<u8> {
@@ -164,7 +158,7 @@ fn long_records() {
             .collect::<String>()
             .into()
     };
-    write(dir.path(), "in", &lines(&mut (15..=25)));
+    write(dir.path(), "in", lines(&mut (15..=25)));
     let out = lines(&mut (15..=25).rev());
     check(dir.path(), &["-r", "in"], b"", &out);
     check(dir.path(), &["-k", "1,1r", "-k", "1", "in"], b"", &out);

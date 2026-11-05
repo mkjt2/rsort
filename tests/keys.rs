@@ -3,33 +3,8 @@
 
 mod common;
 
-use common::cmd;
+use common::{c_locale as sort, sorted};
 use predicates::prelude::*;
-use std::path::Path;
-
-fn sort(dir: &Path) -> assert_cmd::Command {
-    let mut c = cmd(dir);
-    c.current_dir(dir)
-        .env("LC_ALL", "C")
-        .env_remove("LC_COLLATE")
-        .env_remove("LANG");
-    c
-}
-
-/// Sort `input` with `args` and return stdout, asserting success.
-fn sorted(args: &[&str], input: &str) -> String {
-    let dir = tempfile::tempdir().unwrap();
-    let out = sort(dir.path())
-        .args(args)
-        .write_stdin(input)
-        .assert()
-        .success()
-        .stderr("")
-        .get_output()
-        .stdout
-        .clone();
-    String::from_utf8(out).unwrap()
-}
 
 fn usage_error(args: &[&str], fragment: &str) {
     let dir = tempfile::tempdir().unwrap();

@@ -10,14 +10,9 @@ use std::path::Path;
 const MIXED: &str = "b\nB\na\nA\n_x\n";
 
 fn run(dir: &Path, env: &[(&str, &str)], args: &[&str], input: &[u8]) -> Vec<u8> {
-    let mut c = cmd(dir);
-    c.env_remove("LC_ALL")
-        .env_remove("LC_COLLATE")
-        .env_remove("LANG");
-    for (k, v) in env {
-        c.env(k, v);
-    }
-    c.args(args)
+    cmd(dir)
+        .envs(env.iter().copied())
+        .args(args)
         .write_stdin(input.to_vec())
         .assert()
         .success()
@@ -189,12 +184,7 @@ mod macos {
     /// accents, and the text options.
     #[test]
     fn matches_usr_bin_sort_in_utf8() {
-        let sort = Path::new("/usr/bin/sort");
-        if !sort.exists() {
-            return;
-        }
         let input = "ab\na b\na-b\naB\n\u{e9}\ne\nE\nf\n\u{c9}t\u{e9}\n_x\nZ\nz\n10\n9\n\u{fc}ber\nUber\n1,000\n999\n2,5K\n1.5e3\n\u{e5}b\n\u{c5}a\naa\nAb\n";
-        let dir = tempfile::tempdir().unwrap();
         for args in [
             &[][..],
             &["-f"],
@@ -209,27 +199,28 @@ mod macos {
             &["-h"],
             &["-g"],
         ] {
-            let want = std::process::Command::new(sort)
-                .args(args)
-                .env("LC_ALL", UTF8)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .and_then(|mut child| {
-                    use std::io::Write;
-                    child.stdin.take().unwrap().write_all(input.as_bytes())?;
-                    child.wait_with_output()
-                })
-                .unwrap()
-                .stdout;
-            let got = run(dir.path(), &[("LC_ALL", UTF8)], args, input.as_bytes());
-            assert_eq!(
-                String::from_utf8_lossy(&got),
-                String::from_utf8_lossy(&want),
-                "args {args:?}"
-            );
+            same_as_sort(&[("LC_ALL", UTF8)], args, input.as_bytes());
         }
     }
+}
+
+/// rsort and /usr/bin/sort agree on `input` with `env`.
+#[cfg(target_os = "macos")]
+fn same_as_sort(env: &[(&str, &str)], args: &[&str], input: &[u8]) {
+    let dir = tempfile::tempdir().unwrap();
+    let want = common::hermetic(assert_cmd::Command::new("/usr/bin/sort"), dir.path())
+        .envs(env.iter().copied())
+        .args(args)
+        .write_stdin(input.to_vec())
+        .output()
+        .unwrap()
+        .stdout;
+    let got = run(dir.path(), env, args, input);
+    assert_eq!(
+        String::from_utf8_lossy(&got),
+        String::from_utf8_lossy(&want),
+        "{env:?} {args:?}"
+    );
 }
 
 /// Locales other than C and en_US.UTF-8, checked against /usr/bin/sort.
@@ -237,47 +228,17 @@ mod macos {
 mod oracle {
     use super::*;
 
-    /// rsort and sort agree on `input` with `env` (LC_ALL etc. cleared).
-    fn same_as_sort(env: &[(&str, &str)], args: &[&str], input: &[u8]) {
-        use std::io::Write;
-        let dir = tempfile::tempdir().unwrap();
-        let mut c = std::process::Command::new("/usr/bin/sort");
-        c.env_remove("LC_ALL")
-            .env_remove("LC_COLLATE")
-            .env_remove("LANG");
-        c.envs(env.iter().copied()).args(args);
-        c.stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped());
-        let mut child = c.spawn().unwrap();
-        child.stdin.take().unwrap().write_all(input).unwrap();
-        let want = child.wait_with_output().unwrap().stdout;
-        let got = run(dir.path(), env, args, input);
-        assert_eq!(
-            String::from_utf8_lossy(&got),
-            String::from_utf8_lossy(&want),
-            "{env:?} {args:?}"
-        );
-    }
-
     /// Latin-1-ish and Cyrillic text in UTF-8 and in a single-byte encoding.
     const LATIN: &str = "\u{e9}t\u{e9}\n\u{c9}T\u{c9}\nzoo\n\u{df}x\nA-b\na b\nAb\n\u{a0}x\n";
     const CYRILLIC: &str = "\u{44f}\u{43d}\u{432}. 3\n\u{424}\u{415}\u{412}\u{420}. 2\n\u{43c}\u{430}\u{44f} 5\n\u{434}\u{435}\u{43a}. 1\nfoo\n\u{42f}\u{41d}\u{412}\u{410}\u{420}\u{42c}\n";
 
     fn encode(text: &str, charset: &str) -> Vec<u8> {
-        use std::io::Write;
-        let mut child = std::process::Command::new("iconv")
+        assert_cmd::Command::new("iconv")
             .args(["-f", "UTF-8", "-t", charset])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .take()
+            .write_stdin(text)
+            .output()
             .unwrap()
-            .write_all(text.as_bytes())
-            .unwrap();
-        child.wait_with_output().unwrap().stdout
+            .stdout
     }
 
     #[test]
