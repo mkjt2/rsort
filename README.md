@@ -53,8 +53,10 @@ collation: text always compares in byte order there, and numbers use C rules.
 - Month names (`-M`) are always the English abbreviations JAN to DEC.
 - `-R` uses a different hash, so a given `--random-source` gives a different
   (but repeatable) order than sort's.
-- A thousands separator before any digit and followed by a zero (`,05` in
-  en_US) does not reproduce sort's ordering.
+- Two odd uses of the thousands separator don't reproduce sort's ordering
+  of `-n`/`-h`: one before any digit and followed by a zero (`,05` in
+  en_US), and a zero written with one (`0,0`, which sort places between 0
+  and 1).
 - `-S`, `-T`, `--parallel`, `--batch-size`, `--compress-program`,
   `--radixsort`, `--mergesort`, `--qsort`, `--heapsort` and `--mmap` are
   accepted and ignored: rsort sorts in memory.

@@ -1,58 +1,13 @@
-//! Comparable key values, one kind per ordering mode, computed once per line.
+//! Key values: a fixed-size summary per key that decides most comparisons,
+//! and the full comparison of two keys for when summaries can't.
 
 use super::collate::{self, Collator, NumberFormat};
 use super::key::{Mode, Order, is_blank, skip_blanks};
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::hash::Hasher;
 
-/// Where a key's bytes are: a range of its line, or of the shared arena
-/// that holds rewritten keys (-d/-f/-i) and collation keys.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Span {
-    Line(usize, usize),
-    Arena(usize, usize),
-}
-
-impl Span {
-    pub fn get<'a>(self, line: &'a [u8], arena: &'a [u8]) -> &'a [u8] {
-        match self {
-            Span::Line(b, e) => &line[b..e],
-            Span::Arena(b, e) => &arena[b..e],
-        }
-    }
-}
-
-/// How a text key collates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Coll {
-    /// By bytes: the C locale, or invalid UTF-8 in a UTF-8 locale (which
-    /// then compares by bytes against everything).
-    Bytes,
-    /// By its strxfrm key, at this arena range.
-    Key(usize, usize),
-    /// By strcoll at each comparison: strxfrm failed for this key.
-    Strcoll,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Value {
-    Text {
-        key: Span,
-        coll: Coll,
-    },
-    Numeric(Decimal),
-    General(General),
-    Human(Human),
-    Month(u8),
-    /// The key and where its filevercmp suffix starts.
-    Version {
-        key: Span,
-        suffix: Option<usize>,
-    },
-    Random(u64, Span),
-}
-
-/// What key values depend on beyond the key itself.
+/// What key comparisons depend on beyond the key bytes.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Context {
     /// Seed for `-R` hashes.
@@ -63,139 +18,153 @@ pub struct Context {
     pub collator: Collator,
 }
 
-/// Compute the value of the key at `begin..end` of `line`, storing any
-/// derived bytes in `arena`. As in sort, -d, -i and -f rewrite the key
-/// before any mode interprets it.
-pub fn value(
-    line: &[u8],
-    begin: usize,
-    end: usize,
-    order: &Order,
-    cx: &Context,
-    arena: &mut Vec<u8>,
-) -> Value {
-    let end = end.max(begin);
-    let mark = arena.len();
-    let key = if order.fold || order.dictionary || order.nonprinting {
-        transform_into(&line[begin..end], order, cx.utf8, arena);
-        Span::Arena(mark, arena.len())
-    } else {
-        Span::Line(begin, end)
-    };
-    let parsed = {
-        let bytes = key.get(line, arena);
-        match order.mode {
-            Mode::Text => None,
-            Mode::Version => {
-                return Value::Version {
-                    key,
-                    suffix: version_suffix(bytes),
-                };
-            }
-            Mode::Random => {
-                let mut h = std::hash::DefaultHasher::new();
-                h.write_u64(cx.seed);
-                h.write(bytes);
-                return Value::Random(h.finish(), key);
-            }
-            Mode::Numeric => Some(Value::Numeric(Decimal::parse(bytes, &cx.numbers).0)),
-            Mode::General => Some(Value::General(General::parse(bytes, cx.numbers.decimal))),
-            Mode::Human => Some(Value::Human(Human::parse(bytes, &cx.numbers))),
-            Mode::Month => Some(Value::Month(month(bytes))),
-        }
-    };
-    if let Some(v) = parsed {
-        arena.truncate(mark);
-        return v;
-    }
-    let coll = match cx.collator {
-        Collator::Bytes => Coll::Bytes,
-        Collator::Locale { utf8 } => {
-            if utf8 && std::str::from_utf8(key.get(line, arena)).is_err() {
-                Coll::Bytes
-            } else {
-                let xfrm = match key {
-                    Span::Line(b, e) => collate::xfrm(&line[b..e], arena),
-                    Span::Arena(b, e) => collate::xfrm_from(arena, b, e),
-                };
-                xfrm.map_or(Coll::Strcoll, |(b, e)| Coll::Key(b, e))
-            }
-        }
-    };
-    Value::Text { key, coll }
+/// A 128-bit summary of a key.
+pub type Bits = u128;
+
+/// What a record keeps about one key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Summary {
+    /// Summaries order like the keys they summarize: a < b implies key a
+    /// sorts before key b. Equal summaries mean equal keys only if `exact`.
+    Ordered { bits: Bits, exact: bool },
+    /// Not ordered, but saves work in [`compare`]: the `-V` suffix start.
+    Version(Option<usize>),
+    /// Nothing usable: compare the keys.
+    None,
 }
 
-/// The first 8 bytes, big-endian and zero-padded: comparing prefixes never
-/// contradicts comparing the whole byte strings.
-pub fn prefix8(bytes: &[u8]) -> u64 {
-    let mut buf = [0u8; 8];
-    let n = bytes.len().min(8);
-    buf[..n].copy_from_slice(&bytes[..n]);
-    u64::from_be_bytes(buf)
-}
-
-impl Value {
-    /// A u64 whose order agrees with [`compare`] (equal prefixes say
-    /// nothing), or `None` for a text key without a collation key while the
-    /// locale collates: it compares by bytes or strcoll against the others,
-    /// so no prefix is consistent.
-    pub fn prefix(&self, line: &[u8], arena: &[u8], collator: Collator) -> Option<u64> {
-        Some(match self {
-            Value::Text {
-                coll: Coll::Key(b, e),
-                ..
-            } => prefix8(&arena[*b..*e]),
-            Value::Text { key, .. } => match collator {
-                Collator::Bytes => prefix8(key.get(line, arena)),
-                Collator::Locale { .. } => return None,
-            },
-            Value::Month(m) => u64::from(*m),
-            Value::Random(h, _) => *h,
-            _ => 0,
-        })
-    }
-}
-
-/// Compare two values of the same key; `a_line`/`b_line` and `arena`
-/// resolve spans.
-pub fn compare(
-    a: &Value,
-    a_line: &[u8],
-    b: &Value,
-    b_line: &[u8],
-    arena: &[u8],
-    collator: Collator,
-) -> Ordering {
-    match (a, b) {
-        (Value::Text { key: ka, coll: ca }, Value::Text { key: kb, coll: cb }) => {
-            let (x, y) = (ka.get(a_line, arena), kb.get(b_line, arena));
-            match (ca, cb) {
-                (Coll::Key(a0, a1), Coll::Key(b0, b1)) => {
-                    arena[*a0..*a1].cmp(&arena[*b0..*b1]).then_with(|| x.cmp(y))
+/// Summarize a key (already rewritten by -d/-f/-i).
+pub fn summarize(key: &[u8], mode: Mode, cx: &Context) -> Summary {
+    let ordered = |bits, exact| Summary::Ordered { bits, exact };
+    match mode {
+        Mode::Text => match cx.collator {
+            Collator::Bytes => {
+                let (bits, exact) = bytes_bits(key);
+                ordered(bits, exact)
+            }
+            Collator::Locale { utf8 } => {
+                if utf8 && std::str::from_utf8(key).is_err() {
+                    return Summary::None;
                 }
-                (Coll::Bytes, _) | (_, Coll::Bytes) => x.cmp(y),
-                _ => collator.compare(x, y),
+                // Equal collation keys still fall back to bytes: never exact.
+                with_scratch(|buf| match collate::xfrm(key, buf) {
+                    Some((b, e)) => ordered(bytes_bits(&buf[b..e]).0, false),
+                    None => Summary::None,
+                })
             }
+        },
+        Mode::Numeric => {
+            let (bits, exact) = Decimal::parse(key, &cx.numbers).0.bits();
+            ordered(bits, exact)
         }
-        (Value::Numeric(x), Value::Numeric(y)) => x.cmp(y),
-        (Value::General(x), Value::General(y)) => x.compare(y),
-        (Value::Human(x), Value::Human(y)) => x.cmp(y),
-        (Value::Month(x), Value::Month(y)) => x.cmp(y),
-        (
-            Value::Version {
-                key: ka,
-                suffix: sa,
-            },
-            Value::Version {
-                key: kb,
-                suffix: sb,
-            },
-        ) => version_cmp_with(ka.get(a_line, arena), *sa, kb.get(b_line, arena), *sb),
-        (Value::Random(hx, x), Value::Random(hy, y)) => hx
-            .cmp(hy)
-            .then_with(|| collator.compare(x.get(a_line, arena), y.get(b_line, arena))),
-        // Every record's key k has the same kind.
-        _ => Ordering::Equal,
+        Mode::Human => {
+            let (bits, exact) = Human::parse(key, &cx.numbers).bits();
+            ordered(bits, exact)
+        }
+        Mode::General => match General::parse(key, cx.numbers.decimal).bits() {
+            Some(bits) => ordered(bits, true),
+            None => Summary::None,
+        },
+        Mode::Month => ordered(Bits::from(month(key)), true),
+        Mode::Random => ordered(Bits::from(random_hash(key, cx.seed)) << 64, false),
+        Mode::Version => Summary::Version(version_suffix(key)),
+    }
+}
+
+/// Compare two keys (already rewritten by -d/-f/-i) in `mode`. `suffixes`
+/// are the keys' cached [`Summary::Version`] values, if any.
+pub fn compare(
+    a: &[u8],
+    b: &[u8],
+    mode: Mode,
+    cx: &Context,
+    suffixes: Option<(Option<usize>, Option<usize>)>,
+) -> Ordering {
+    match mode {
+        Mode::Text => text(a, b, cx.collator),
+        Mode::Numeric => Decimal::parse(a, &cx.numbers)
+            .0
+            .cmp(&Decimal::parse(b, &cx.numbers).0),
+        Mode::Human => Human::parse(a, &cx.numbers).cmp(&Human::parse(b, &cx.numbers)),
+        Mode::General => {
+            General::parse(a, cx.numbers.decimal).compare(&General::parse(b, cx.numbers.decimal))
+        }
+        Mode::Month => month(a).cmp(&month(b)),
+        Mode::Random => random_hash(a, cx.seed)
+            .cmp(&random_hash(b, cx.seed))
+            .then_with(|| text(a, b, cx.collator)),
+        Mode::Version => match suffixes {
+            Some((sa, sb)) => version_cmp_with(a, sa, b, sb),
+            None => version_cmp(a, b),
+        },
+    }
+}
+
+/// Text order: collation (when the locale has one), then bytes.
+fn text(a: &[u8], b: &[u8], collator: Collator) -> Ordering {
+    if a == b {
+        return Ordering::Equal;
+    }
+    collator.compare(a, b)
+}
+
+fn random_hash(key: &[u8], seed: u64) -> u64 {
+    let mut h = std::hash::DefaultHasher::new();
+    h.write_u64(seed);
+    h.write(key);
+    h.finish()
+}
+
+/// Bytes as a summary: the first 15, zero-padded, then the length (255 when
+/// longer than 15). Comparing these never contradicts comparing the bytes,
+/// and equal summaries of keys up to 15 bytes mean equal keys.
+fn bytes_bits(b: &[u8]) -> (Bits, bool) {
+    let mut buf = [0u8; 16];
+    let n = b.len().min(15);
+    buf[..n].copy_from_slice(&b[..n]);
+    let exact = b.len() <= 15;
+    buf[15] = if exact { n as u8 } else { u8::MAX };
+    (Bits::from_be_bytes(buf), exact)
+}
+
+thread_local! {
+    static SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+fn with_scratch<T>(f: impl FnOnce(&mut Vec<u8>) -> T) -> T {
+    SCRATCH.with_borrow_mut(|buf| {
+        buf.clear();
+        f(buf)
+    })
+}
+
+/// The bits of a non-negative number with `int` and `frac` digits, `digits`
+/// of them kept: the integer length (255 when 255 or more, with no digits
+/// kept), then up to `digits` digits as nibbles, then 1 if some were cut.
+/// `8 + 4 * digits + 1` bits wide; higher means larger.
+fn magnitude_bits(int: &[u8], frac: &[u8], digits: usize) -> (Bits, bool) {
+    if int.len() >= 255 {
+        return ((0xFF << (4 * digits + 1)) | 1, false);
+    }
+    let mut bits = int.len() as Bits;
+    let mut all = int.iter().chain(frac);
+    for _ in 0..digits {
+        let d = all.next().map_or(0, |&d| d - b'0');
+        bits = (bits << 4) | Bits::from(d);
+    }
+    let cut = all.next().is_some();
+    ((bits << 1) | Bits::from(cut), !cut)
+}
+
+/// Sign class (0 negative, 1 zero, 2 positive) in the top two bits, then
+/// `field` (`width` bits, larger for larger magnitudes), inverted for
+/// negatives so that larger magnitudes sort first.
+fn signed_bits(sign: Ordering, field: Bits, width: u32) -> Bits {
+    let mask = (1 << width) - 1;
+    match sign {
+        Ordering::Less => field ^ mask,
+        Ordering::Equal => 1 << 126,
+        Ordering::Greater => (2 << 126) | field,
     }
 }
 
@@ -320,6 +289,20 @@ impl Decimal {
         self.int.is_empty() && self.frac.is_empty()
     }
 
+    /// Summary bits (see [`Summary::Ordered`]) and whether they are exact.
+    fn bits(&self) -> (Bits, bool) {
+        let sign = if self.is_zero() {
+            Ordering::Equal
+        } else if self.negative {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        };
+        // 8 + 4 * 29 + 1 = 125 bits, shifted left once: 126 below the sign.
+        let (field, exact) = magnitude_bits(&self.int, &self.frac, 29);
+        (signed_bits(sign, field << 1, 126), exact)
+    }
+
     fn cmp_magnitude(&self, other: &Decimal) -> Ordering {
         self.int
             .len()
@@ -383,6 +366,19 @@ impl Human {
     }
 }
 
+impl Human {
+    /// Summary bits: sign, then suffix and magnitude (inverted when negative).
+    fn bits(&self) -> (Bits, bool) {
+        // 4 + 8 + 4 * 28 + 1 = 125 bits, shifted left once: 126 below the sign.
+        let (magnitude, exact) = magnitude_bits(&self.magnitude.int, &self.magnitude.frac, 28);
+        let field = ((Bits::from(self.suffix) << 121) | magnitude) << 1;
+        (
+            signed_bits(self.sign.cmp(&0), field, 126),
+            exact || self.sign == 0,
+        )
+    }
+}
+
 impl Ord for Human {
     fn cmp(&self, other: &Human) -> Ordering {
         self.sign.cmp(&other.sign).then_with(|| {
@@ -426,6 +422,22 @@ impl General {
             General::Number(_) => 3,
             General::PosOverflow => 4,
         }
+    }
+
+    /// Summary bits: the rank, then the number's bits in an order-preserving
+    /// form (-0 as 0). `None` for a NaN number, which compares equal to
+    /// every number.
+    fn bits(&self) -> Option<Bits> {
+        let number = match self {
+            General::Number(x) if x.is_nan() => return None,
+            General::Number(x) if *x == 0.0 => 1 << 63,
+            General::Number(x) => {
+                let b = x.to_bits();
+                if b >> 63 == 1 { !b } else { b | (1 << 63) }
+            }
+            _ => 0,
+        };
+        Some((Bits::from(self.rank()) << 64) | Bits::from(number))
     }
 
     pub fn compare(&self, other: &General) -> Ordering {

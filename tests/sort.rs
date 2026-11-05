@@ -317,6 +317,25 @@ fn merge_reverse_and_output() {
     assert_eq!(got, "c\nb\na\n");
 }
 
+#[test]
+fn merge_reads_stdin_once() {
+    // As sort: stdin merges with files, and a second `-` is already empty.
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "m7", "b\n");
+    sort(dir.path())
+        .args(["-m", "-", "m7"])
+        .write_stdin("a\nc\n")
+        .assert()
+        .success()
+        .stdout("a\nb\nc\n");
+    sort(dir.path())
+        .args(["-m", "-", "-"])
+        .write_stdin("a\nc\n")
+        .assert()
+        .success()
+        .stdout("a\nc\n");
+}
+
 // --- errors -----------------------------------------------------------------
 
 #[test]
