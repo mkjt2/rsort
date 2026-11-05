@@ -27,8 +27,9 @@ pub enum Summary {
     /// Summaries order like the keys they summarize: a < b implies key a
     /// sorts before key b. Equal summaries mean equal keys only if `exact`.
     Ordered { bits: Bits, exact: bool },
-    /// Not ordered, but saves work in [`compare`]: the `-V` suffix start.
-    Version(Option<usize>),
+    /// Not ordered, but saves work in [`compare`]: the `-V` version length
+    /// ([`version_prefix`]).
+    Version(usize),
     /// Nothing usable: compare the keys.
     None,
 }
@@ -67,18 +68,18 @@ pub fn summarize(key: &[u8], mode: Mode, cx: &Context) -> Summary {
         },
         Mode::Month => ordered(Bits::from(month(key)), true),
         Mode::Random => ordered(Bits::from(random_hash(key, cx.seed)) << 64, false),
-        Mode::Version => Summary::Version(version_suffix(key)),
+        Mode::Version => Summary::Version(version_prefix(key)),
     }
 }
 
-/// Compare two keys (already rewritten by -d/-f/-i) in `mode`. `suffixes`
+/// Compare two keys (already rewritten by -d/-f/-i) in `mode`. `prefixes`
 /// are the keys' cached [`Summary::Version`] values, if any.
 pub fn compare(
     a: &[u8],
     b: &[u8],
     mode: Mode,
     cx: &Context,
-    suffixes: Option<(Option<usize>, Option<usize>)>,
+    prefixes: Option<(usize, usize)>,
 ) -> Ordering {
     match mode {
         Mode::Text => text(a, b, cx.collator),
@@ -93,8 +94,8 @@ pub fn compare(
         Mode::Random => random_hash(a, cx.seed)
             .cmp(&random_hash(b, cx.seed))
             .then_with(|| text(a, b, cx.collator)),
-        Mode::Version => match suffixes {
-            Some((sa, sb)) => version_cmp_with(a, sa, b, sb),
+        Mode::Version => match prefixes {
+            Some((pa, pb)) => version_cmp_with(a, pa, b, pb),
             None => version_cmp(a, b),
         },
     }
@@ -581,56 +582,20 @@ pub fn month(s: &[u8]) -> u8 {
 
 // --- -V --------------------------------------------------------------------
 
-/// GNU filevercmp: hidden files first, suffixes like `.tar.gz` compared last,
-/// digit runs compared numerically, `~` before everything.
+/// sort's `vcmp`: `.` and `..` and hidden files first, then the version
+/// parts (before any `.ext` suffix) compared with digit runs as numbers and
+/// `~` before everything, then bytes.
 pub fn version_cmp(a: &[u8], b: &[u8]) -> Ordering {
-    version_cmp_with(a, version_suffix(a), b, version_suffix(b))
+    version_cmp_with(a, version_prefix(a), b, version_prefix(b))
 }
 
-/// Where [`version_cmp_with`] needs the suffix of `s` to start: after a
-/// leading dot, as filevercmp strips one before looking for suffixes.
-pub fn version_suffix(s: &[u8]) -> Option<usize> {
-    let skip = usize::from(s.first() == Some(&b'.'));
-    suffix_start(&s[skip..])
-}
-
-/// [`version_cmp`] with each side's [`version_suffix`] precomputed.
-pub fn version_cmp_with(
-    a: &[u8],
-    a_suffix: Option<usize>,
-    b: &[u8],
-    b_suffix: Option<usize>,
-) -> Ordering {
-    let simple = a.cmp(b);
-    if simple == Ordering::Equal {
-        return simple;
-    }
-    for special in [&b""[..], b".", b".."] {
-        if a == special {
-            return Ordering::Less;
-        }
-        if b == special {
-            return Ordering::Greater;
-        }
-    }
-    let (a, b) = match (a.first() == Some(&b'.'), b.first() == Some(&b'.')) {
-        (true, false) => return Ordering::Less,
-        (false, true) => return Ordering::Greater,
-        (true, true) => (&a[1..], &b[1..]),
-        (false, false) => (a, b),
-    };
-    let (mut a_len, mut b_len) = (a_suffix.unwrap_or(a.len()), b_suffix.unwrap_or(b.len()));
-    if (a_suffix.is_some() || b_suffix.is_some()) && a[..a_len] == b[..b_len] {
-        (a_len, b_len) = (a.len(), b.len());
-    }
-    match verrevcmp(&a[..a_len], &b[..b_len]) {
-        Ordering::Equal => simple,
-        ord => ord,
-    }
-}
-
-/// Start of the trailing `(\.[A-Za-z~][A-Za-z0-9~]*)*` suffix, if any.
-fn suffix_start(s: &[u8]) -> Option<usize> {
+/// The length of the version part of `s` (after one leading dot, which
+/// `vcmp` skips): up to a trailing `(\.[A-Za-z~][A-Za-z0-9~]*)*` suffix, and
+/// never past a NUL, where sort's `find_suffix` stops reading.
+pub fn version_prefix(s: &[u8]) -> usize {
+    let s = &s[usize::from(s.first() == Some(&b'.'))..];
+    let end = s.iter().position(|&c| c == 0).unwrap_or(s.len());
+    let s = &s[..end];
     let mut found = None;
     let mut after_dot = false;
     for (i, &c) in s.iter().enumerate() {
@@ -646,7 +611,37 @@ fn suffix_start(s: &[u8]) -> Option<usize> {
             found = None;
         }
     }
-    found
+    found.unwrap_or(end)
+}
+
+/// [`version_cmp`] with each side's [`version_prefix`] precomputed.
+pub fn version_cmp_with(a: &[u8], a_len: usize, b: &[u8], b_len: usize) -> Ordering {
+    let bytes = a.cmp(b);
+    if bytes == Ordering::Equal {
+        return bytes;
+    }
+    for special in [&b""[..], b".", b".."] {
+        if a == special {
+            return Ordering::Less;
+        }
+        if b == special {
+            return Ordering::Greater;
+        }
+    }
+    let (a, b) = match (a.first() == Some(&b'.'), b.first() == Some(&b'.')) {
+        (true, false) => return Ordering::Less,
+        (false, true) => return Ordering::Greater,
+        (true, true) => (&a[1..], &b[1..]),
+        (false, false) => (a, b),
+    };
+    let (a, b) = (&a[..a_len], &b[..b_len]);
+    if a == b {
+        return bytes;
+    }
+    match verrevcmp(a, b) {
+        Ordering::Equal => bytes,
+        ord => ord,
+    }
 }
 
 fn char_order(c: Option<&u8>) -> i32 {
@@ -815,8 +810,16 @@ mod tests {
         assert_eq!(v(".b", ".a"), Ordering::Greater);
         assert_eq!(v("x", ""), Ordering::Greater);
         assert_eq!(v("x", "."), Ordering::Greater);
-        assert_eq!(v("f.tar.gz", "f.tar.gz~"), Ordering::Greater);
         assert_eq!(v("f-1.tar.gz", "f.tar.gz"), Ordering::Greater);
+        // Equal versions compare as bytes, whatever the suffixes (sort's
+        // vcmp; GNU would compare whole strings as versions here).
+        assert_eq!(v("f.tar.gz", "f.tar.gz~"), Ordering::Less);
+        assert_eq!(v("foo.a", "foo.a~"), Ordering::Less);
+        assert_eq!(v("a.b10", "a.b2"), Ordering::Less);
+        // The version part ends at a NUL.
+        assert_eq!(v("sort.h\0z", "sort.o"), Ordering::Less);
+        assert_eq!(v("a2\0x", "a10"), Ordering::Less);
+        assert_eq!(v("a\0b", "a\0a"), Ordering::Greater);
     }
 
     #[test]

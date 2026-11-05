@@ -112,6 +112,12 @@ impl Collator {
         matches!(self, Collator::Locale { utf8: true })
     }
 
+    /// Compare as sort's `bwscoll` does. In a locale this is strcoll on
+    /// each NUL-separated part in turn (a part that ends first sorts first),
+    /// then the shorter string (in characters) first. Strings that collate
+    /// the same and have the same length are equal, even if their bytes
+    /// differ: macOS gives no weight to some scripts (all Cyrillic collates
+    /// equal in en_US.UTF-8), and sort keeps such lines in input order.
     pub fn compare(self, a: &[u8], b: &[u8]) -> Ordering {
         match self {
             Collator::Bytes => a.cmp(b),
@@ -119,12 +125,63 @@ impl Collator {
                 if utf8 && (std::str::from_utf8(a).is_err() || std::str::from_utf8(b).is_err()) {
                     return a.cmp(b);
                 }
-                // strcoll stops at NUL: collate up to the first one, then bytes.
-                let cut = |s: &[u8]| s.iter().position(|&c| c == 0).unwrap_or(s.len());
-                strcoll(&a[..cut(a)], &b[..cut(b)]).then_with(|| a.cmp(b))
+                collate_parts(a, b, utf8)
             }
         }
     }
+}
+
+/// Length in characters: UTF-8 code points, or bytes.
+fn units(s: &[u8], utf8: bool) -> usize {
+    if utf8 {
+        s.iter().filter(|&&c| (c as i8) >= -0x40).count()
+    } else {
+        s.len()
+    }
+}
+
+/// [`Collator::compare`] for a locale, on valid text.
+fn collate_parts(a: &[u8], b: &[u8], utf8: bool) -> Ordering {
+    fn part(s: &[u8], at: usize) -> &[u8] {
+        let rest = &s[at..];
+        &rest[..rest.iter().position(|&c| c == 0).unwrap_or(rest.len())]
+    }
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        match (a[i], b[j]) {
+            (0, 0) => {
+                i += 1;
+                j += 1;
+                continue;
+            }
+            (0, _) => return Ordering::Less,
+            (_, 0) => return Ordering::Greater,
+            _ => {}
+        }
+        let (pa, pb) = (part(a, i), part(b, j));
+        let ord = strcoll(pa, pb);
+        if ord != Ordering::Equal {
+            return ord;
+        }
+        // Collated the same: the part that is shorter ends first.
+        match units(pa, utf8).cmp(&units(pb, utf8)) {
+            Ordering::Equal => {
+                i += pa.len();
+                j += pb.len();
+            }
+            shorter => {
+                let (ra, rb) = (a.len() - i, b.len() - j);
+                // Reaching the end of a whole string decides by total length.
+                if (shorter == Ordering::Less && pa.len() == ra)
+                    || (shorter == Ordering::Greater && pb.len() == rb)
+                {
+                    break;
+                }
+                return shorter;
+            }
+        }
+    }
+    units(a, utf8).cmp(&units(b, utf8))
 }
 
 thread_local! {
@@ -207,6 +264,24 @@ fn strcoll(a: &[u8], b: &[u8]) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locale_order_collates_each_nul_separated_part_then_length() {
+        // The test process is in the C locale, where strcoll is strcmp.
+        let c = Collator::Locale { utf8: true };
+        let o = |a: &[u8], b: &[u8]| c.compare(a, b);
+        assert_eq!(o(b"a\0b", b"a\0c"), Ordering::Less);
+        assert_eq!(o(b"a\0c", b"ab"), Ordering::Less, "a part ends first");
+        assert_eq!(o(b"ab", b"a\0c"), Ordering::Greater);
+        assert_eq!(o(b"\0\0b", b"\0\0a"), Ordering::Greater);
+        assert_eq!(o(b"\0a", b"a"), Ordering::Less);
+        assert_eq!(o(b"a", b"a\0"), Ordering::Less, "then length");
+        assert_eq!(o(b"a\0", b"a"), Ordering::Greater);
+        assert_eq!(o("é".as_bytes(), "é".as_bytes()), Ordering::Equal);
+        assert_eq!(o(b"\xff", b"a"), Ordering::Greater, "invalid UTF-8: bytes");
+        assert_eq!(units("aé".as_bytes(), true), 2);
+        assert_eq!(units("aé".as_bytes(), false), 3);
+    }
 
     fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let pairs: Vec<(String, String)> = pairs

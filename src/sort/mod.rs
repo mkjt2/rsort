@@ -46,7 +46,7 @@ pub struct Record<'a> {
     /// Index of this record's further summaries in [`Keys`].
     id: u32,
     /// Two bits per key: 0 none, 1 ordered, 3 ordered and exact, 2 a `-V`
-    /// suffix (stored as start + 1, 0 for none).
+    /// version length.
     flags: u32,
 }
 
@@ -143,7 +143,7 @@ impl Sorter {
                     let bits = if k.order.reverse { !bits } else { bits };
                     (if exact { EXACT } else { ORDERED }, bits)
                 }
-                Summary::Version(suffix) => (VERSION, suffix.map_or(0, |s| s as Bits + 1)),
+                Summary::Version(len) => (VERSION, len as Bits),
                 Summary::None => (NONE, 0),
             };
             record.flags |= flag << (2 * i);
@@ -169,20 +169,20 @@ impl Sorter {
         (flag, bits)
     }
 
-    /// Compare key `i` of two lines in full, `suffixes` being cached `-V`
-    /// suffix starts.
+    /// Compare key `i` of two lines in full, `prefixes` being cached `-V`
+    /// version lengths.
     fn compare_key(
         &self,
         i: usize,
         a: &[u8],
         b: &[u8],
-        suffixes: Option<(Option<usize>, Option<usize>)>,
+        prefixes: Option<(usize, usize)>,
     ) -> Ordering {
         let k = &self.keys[i];
         let cx = self.context();
         let ord = self.with_key(k, a, 0, |x| {
             self.with_key(k, b, 1, |y| {
-                value::compare(x, y, k.order.mode, &cx, suffixes)
+                value::compare(x, y, k.order.mode, &cx, prefixes)
             })
         });
         if k.order.reverse { ord.reverse() } else { ord }
@@ -200,8 +200,7 @@ impl Sorter {
                     ord => ord,
                 }
             } else if fa == VERSION && fb == VERSION {
-                let suffix = |s: Bits| s.checked_sub(1).map(|s| s as usize);
-                self.compare_key(i, a.line, b.line, Some((suffix(sa), suffix(sb))))
+                self.compare_key(i, a.line, b.line, Some((sa as usize, sb as usize)))
             } else {
                 self.compare_key(i, a.line, b.line, None)
             };
@@ -252,11 +251,13 @@ impl Sorter {
     /// Sort, then apply `-u` (keeping the first of equal records).
     pub fn sort(&self, keys: &Keys, records: &mut Vec<Record>) {
         let cmp = |a: &Record, b: &Record| self.compare(keys, a, b);
-        if self.stable || (self.unique && !keys.plain) {
+        // In byte order, ties are identical lines (the last resort, or -u on
+        // whole lines), so stability is unobservable. A locale can collate
+        // different lines the same; sort keeps those in input order.
+        let ties_differ = !matches!(self.collator, Collator::Bytes);
+        if self.stable || (self.unique && !keys.plain) || ties_differ {
             records.sort_by(cmp);
         } else {
-            // Ties are identical lines (the last resort, or -u on whole
-            // lines), so stability is unobservable.
             records.sort_unstable_by(cmp);
         }
         if self.unique {

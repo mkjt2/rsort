@@ -43,6 +43,11 @@ bench *args:
     cargo build --locked --release
     scripts/bench.py {{ args }}
 
+# Differential test against the system sort, ported from sort's own testsuite (`just compat --help`)
+compat *args:
+    cargo build --locked --release
+    scripts/compat.py {{ args }}
+
 # Verify Linux musl release binaries are fully static (skipped without zig)
 static-check:
     scripts/static-check.sh

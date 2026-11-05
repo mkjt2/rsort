@@ -75,6 +75,33 @@ mod macos {
     }
 
     #[test]
+    fn lines_that_collate_equal_keep_input_order() {
+        // macOS gives Cyrillic no weight in en_US.UTF-8: strcoll calls any
+        // two such strings equal, and sort then orders by length only.
+        let dir = tempfile::tempdir().unwrap();
+        let env = &[("LC_ALL", UTF8)][..];
+        let input = "кц\nва\nваа\nк\n".as_bytes();
+        assert_eq!(
+            run(dir.path(), env, &[], input),
+            "к\nкц\nва\nваа\n".as_bytes()
+        );
+        assert_eq!(
+            run(dir.path(), env, &["-u"], input),
+            "к\nкц\nваа\n".as_bytes()
+        );
+        assert_eq!(run(dir.path(), env, &["-c"], "кц\nва\n".as_bytes()), b"");
+        assert_eq!(
+            run(
+                dir.path(),
+                env,
+                &["-s", "-k2"],
+                "z вв\ny кк\nx аа\n".as_bytes()
+            ),
+            "z вв\ny кк\nx аа\n".as_bytes()
+        );
+    }
+
+    #[test]
     fn precedence_is_lc_all_then_lc_collate_then_lang() {
         let dir = tempfile::tempdir().unwrap();
         let bytes = b"A\nB\n_x\na\nb\n";

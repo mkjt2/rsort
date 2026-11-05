@@ -109,6 +109,27 @@ fn version_sort_handles_hidden_files_tildes_and_suffixes() {
 }
 
 #[test]
+fn version_sort_compares_equal_versions_as_bytes() {
+    // sort's vcmp: when the parts before the suffixes are equal, the lines
+    // compare as bytes (GNU would compare `~` and digits as versions).
+    assert_eq!(sorted(&["-V"], "foo.a~\nfoo.a\n"), "foo.a\nfoo.a~\n");
+    assert_eq!(sorted(&["-V"], "a.b2\na.b10\n"), "a.b10\na.b2\n");
+    assert_eq!(
+        sorted(&["-V"], "f.tar.gz~\nf.tar.gz\n"),
+        "f.tar.gz\nf.tar.gz~\n"
+    );
+}
+
+#[test]
+fn version_sort_stops_at_a_nul() {
+    assert_eq!(
+        sorted(&["-V"], "sort.o\nsort.h\0z\n"),
+        "sort.h\0z\nsort.o\n"
+    );
+    assert_eq!(sorted(&["-V"], "a10\na2\0x\n"), "a2\0x\na10\n");
+}
+
+#[test]
 fn dictionary_fold_and_nonprinting() {
     assert_eq!(
         sorted(&["-df"], "B-b\nb_a\na c\n#a\n"),
