@@ -274,16 +274,17 @@ fn merge(
     }
 }
 
-/// `Some(true)` to check and report, `Some(false)` to check silently.
+/// `Some(true)` to check and report, `Some(false)` to check silently. Like
+/// sort, `-c`, `-C` and `--check` combine, and any silent one wins.
 fn check_mode(cli: &Cli) -> Option<bool> {
-    if cli.check_silent {
-        return Some(false);
+    if cli.check.is_empty() && !cli.check_silent {
+        return None;
     }
-    cli.check.as_deref().map(|mode| mode == "diagnose-first")
+    Some(!cli.check_silent && cli.check.iter().all(|mode| mode == "diagnose-first"))
 }
 
 fn sorter(cli: &Cli) -> Result<Sorter, AppError> {
-    let global = global_order(cli)?;
+    let global = global_order(cli);
     let blanks = cli.ignore_leading_blanks;
     let keys = if cli.key.is_empty() {
         vec![KeyDef::whole_line(global, blanks)]
@@ -308,7 +309,7 @@ fn sorter(cli: &Cli) -> Result<Sorter, AppError> {
 }
 
 /// The ordering flags that apply to keys without option letters.
-fn global_order(cli: &Cli) -> Result<Order, AppError> {
+fn global_order(cli: &Cli) -> Order {
     let mut order = Order {
         reverse: cli.reverse,
         fold: cli.ignore_case,
@@ -316,36 +317,25 @@ fn global_order(cli: &Cli) -> Result<Order, AppError> {
         nonprinting: cli.ignore_nonprinting,
         ..Order::default()
     };
-    // clap rejects two different mode flags; --sort is checked here.
-    for (on, mode) in [
-        (cli.numeric_sort, Mode::Numeric),
-        (cli.general_numeric_sort, Mode::General),
-        (cli.human_numeric_sort, Mode::Human),
-        (cli.month_sort, Mode::Month),
-        (cli.random_sort, Mode::Random),
+    // clap rejects two different mode flags. As in sort, --sort (which may
+    // repeat) turns its mode on next to them, the comparison is the first
+    // mode on in this order, and the month flag uppercases the key anyway.
+    let sort = |name| cli.sort.iter().any(|s| s == name);
+    let month = cli.month_sort || sort("month");
+    let modes = [
+        (cli.numeric_sort || sort("numeric"), Mode::Numeric),
+        (cli.human_numeric_sort || sort("human-numeric"), Mode::Human),
+        (
+            cli.general_numeric_sort || sort("general-numeric"),
+            Mode::General,
+        ),
+        (month, Mode::Month),
+        (cli.random_sort || sort("random"), Mode::Random),
         (cli.version_sort, Mode::Version),
-    ] {
-        if on {
-            order.set_mode(mode).map_err(AppError::Usage)?;
-        }
-    }
-    if let Some(name) = cli.sort.as_deref() {
-        let mode = match name {
-            "general-numeric" => Mode::General,
-            "human-numeric" => Mode::Human,
-            "month" => Mode::Month,
-            "random" => Mode::Random,
-            _ => Mode::Numeric,
-        };
-        let current = order.mode;
-        order.set_mode(mode).map_err(|_| {
-            AppError::Usage(format!(
-                "--sort={name} cannot be used with -{}",
-                current.letter()
-            ))
-        })?;
-    }
-    Ok(order)
+    ];
+    order.mode = modes.iter().find(|m| m.0).map_or(Mode::Text, |m| m.1);
+    order.fold |= month;
+    order
 }
 
 /// The `-R` hash seed: from `--random-source` contents, or random.

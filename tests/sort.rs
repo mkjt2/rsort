@@ -247,13 +247,30 @@ fn check_with_merge_is_a_usage_error() {
 }
 
 #[test]
-fn check_silent_conflicts_with_check() {
+fn check_forms_combine_and_any_silent_one_wins() {
+    // Like sort: -c, -C and --check may be mixed, and once any of them asks
+    // for silence the check stays silent.
     let dir = tempfile::tempdir().unwrap();
+    for args in [
+        &["-C", "-c"][..],
+        &["-c", "-C"],
+        &["-cC"],
+        &["--check=quiet", "--check=diagnose-first"],
+        &["--check=silent", "-c"],
+    ] {
+        sort(dir.path())
+            .args(args)
+            .write_stdin("b\na\n")
+            .assert()
+            .code(1)
+            .stderr("");
+    }
     sort(dir.path())
-        .args(["-C", "-c"])
-        .write_stdin("a\n")
+        .args(["-c", "--check=diagnose-first"])
+        .write_stdin("b\na\n")
         .assert()
-        .code(2);
+        .code(1)
+        .stderr(predicate::str::contains("disorder"));
 }
 
 #[test]

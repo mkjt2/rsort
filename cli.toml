@@ -181,7 +181,7 @@ description = "Override log filtering (e.g. debug, rsort=trace)"
 id = "check"
 long = "check"
 short = "c"
-kind = "value"
+kind = "values"
 value_name = "MODE"
 default_missing = "diagnose-first"
 possible_values = ["diagnose-first", "silent", "quiet"]
@@ -192,7 +192,6 @@ id = "check_silent"
 long = "check-silent"
 short = "C"
 kind = "switch"
-conflicts_with = ["check"]
 help = "Like -c, but report nothing; only the exit code says whether the input is sorted"
 
 [[flag]]
@@ -305,7 +304,7 @@ help = "Compare version numbers within text, e.g. file-1.9 < file-1.10"
 [[flag]]
 id = "sort"
 long = "sort"
-kind = "value"
+kind = "values"
 value_name = "TYPE"
 possible_values = ["general-numeric", "human-numeric", "month", "numeric", "random"]
 help = "Sort by TYPE; the same as -g, -h, -M, -n or -R"

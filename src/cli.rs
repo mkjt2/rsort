@@ -32,11 +32,12 @@ pub struct Cli {
         num_args = 0..=1,
         require_equals = true,
         default_missing_value = "diagnose-first",
-        value_parser = ["diagnose-first", "silent", "quiet"]
+        value_parser = ["diagnose-first", "silent", "quiet"],
+        action = ArgAction::Append
     )]
-    pub check: Option<String>,
+    pub check: Vec<String>,
 
-    #[arg(short = 'C', long, conflicts_with = "check")]
+    #[arg(short = 'C', long)]
     pub check_silent: bool,
 
     #[arg(short, long)]
@@ -81,8 +82,8 @@ pub struct Cli {
     #[arg(short = 'V', long, conflicts_with_all = ["numeric_sort", "general_numeric_sort", "human_numeric_sort", "month_sort", "random_sort"])]
     pub version_sort: bool,
 
-    #[arg(long, value_name = "TYPE", value_parser = ["general-numeric", "human-numeric", "month", "numeric", "random"], allow_hyphen_values = true)]
-    pub sort: Option<String>,
+    #[arg(long, value_name = "TYPE", value_parser = ["general-numeric", "human-numeric", "month", "numeric", "random"], allow_hyphen_values = true, action = ArgAction::Append)]
+    pub sort: Vec<String>,
 
     #[arg(short, long)]
     pub reverse: bool,

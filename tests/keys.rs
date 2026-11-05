@@ -160,10 +160,27 @@ fn h_and_v_are_modes_not_help_or_version() {
 }
 
 #[test]
+fn sort_type_adds_its_mode_and_the_first_by_priority_wins() {
+    // Like sort, --sort never conflicts: it turns its mode on next to the
+    // others, and the comparison is the first of -n -h -g -M -R -V that is on.
+    assert_eq!(sorted(&["--sort=numeric", "-g"], "1e2\n3\n"), "1e2\n3\n");
+    assert_eq!(sorted(&["-V", "--sort=month"], "feb\njan\n"), "jan\nfeb\n");
+    assert_eq!(
+        sorted(&["--sort=month", "--sort=numeric"], "10\n9\n"),
+        "9\n10\n"
+    );
+    assert_eq!(
+        sorted(&["-k1", "--sort=numeric", "-g"], "1e2\n3\n"),
+        "1e2\n3\n"
+    );
+    // The month flag still uppercases the key: 1m becomes 1M (mega).
+    assert_eq!(sorted(&["-h"], "1m\n2\n"), "1m\n2\n");
+    assert_eq!(sorted(&["-h", "--sort=month"], "1m\n2\n"), "2\n1m\n");
+}
+
+#[test]
 fn conflicting_modes_are_usage_errors() {
     usage_error(&["-n", "-M"], "cannot be used with");
-    usage_error(&["--sort=numeric", "-g"], "cannot be used with");
-    usage_error(&["--sort=random", "-V"], "cannot be used with");
     usage_error(&["-k1,1ng"], "cannot be used with");
 }
 
