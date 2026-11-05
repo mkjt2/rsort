@@ -1,5 +1,5 @@
 //! Behaviour of the built-in commands and global conventions
-//! (exit codes, stdout/stderr separation, --json errors, color, pipes).
+//! (version, usage errors, --generate).
 
 mod common;
 
@@ -62,22 +62,4 @@ fn generate_schema_man_and_completions() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains("complete-bash"));
-}
-
-#[test]
-fn json_output_coverage_is_complete() {
-    // Every command with an output_schema must be exercised by a test that
-    // calls `common::assert_matches_schema`, or be listed here with a reason.
-    const UNTESTABLE: &[(&str, &str)] = &[];
-    const TESTED: &[&str] = &[];
-    let spec = common::spec::Spec::get();
-    for c in &spec.commands {
-        if c.output_schema.is_some() {
-            assert!(
-                TESTED.contains(&c.path.as_str()) || UNTESTABLE.iter().any(|(p, _)| *p == c.path),
-                "command `{}` has an output_schema but no JSON schema test",
-                c.path
-            );
-        }
-    }
 }

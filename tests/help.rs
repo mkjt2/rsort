@@ -29,26 +29,3 @@ fn help_snapshots() {
         insta::assert_snapshot!(name, String::from_utf8(output.stdout).unwrap());
     }
 }
-
-#[test]
-fn short_help_is_shorter_and_omits_exit_codes() {
-    let spec = common::spec::Spec::get();
-    let (Some(short), Some(long)) = rsort::spec::split_flags(&spec.cli.help_flags) else {
-        return; // no short/long pair of help flags to compare
-    };
-    let home = tempfile::tempdir().unwrap();
-    let short = common::cmd(home.path())
-        .arg(format!("-{short}"))
-        .output()
-        .unwrap();
-    let long = common::cmd(home.path())
-        .arg(format!("--{long}"))
-        .output()
-        .unwrap();
-    let (short, long) = (
-        String::from_utf8(short.stdout).unwrap(),
-        String::from_utf8(long.stdout).unwrap(),
-    );
-    assert!(long.contains("Exit codes:"));
-    assert!(!short.contains("Exit codes:"));
-}

@@ -392,15 +392,8 @@ fn generated_interface_matches_cli_toml() {
     assert_eq!(built.help_flags, spec.cli.help_flags);
     assert_eq!(built.version_flags, spec.cli.version_flags);
     assert_eq!(built.error_exit_code, spec.cli.error_exit_code);
-    assert_eq!(built.json, spec.kit.json);
-    let help: Vec<(&str, &str)> = spec
-        .flags
-        .iter()
-        .map(|f| (f.id.as_str(), f.help.as_str()))
-        .chain(spec.args.iter().map(|a| (a.id.as_str(), a.help.as_str())))
-        .collect();
-    assert_eq!(built.help, help);
-    assert_eq!(built.commands.len(), spec.commands.len());
+    assert_eq!(built.help, spec.root_help());
+    assert!(spec.commands.is_empty(), "rsort has no subcommands");
     let schema: serde_json::Value = serde_json::from_str(rsort::spec::SCHEMA).unwrap();
     assert_eq!(schema, spec.schema_document(env!("CARGO_PKG_VERSION")));
 }
@@ -519,14 +512,8 @@ fn root_help_mentions_schema_only_when_there_is_a_schema_command() {
 
 #[test]
 fn rendered_rust_escapes_text() {
-    let spec = Spec::parse(
-        "schema_version = 1\n[cli]\nname = \"x\"\nabout = 'say \"hi\" \\ é'\n\
-         [[command]]\npath = \"go\"\nabout = \"g\"\n\
-         [[command.examples]]\ncmd = \"x go\"\ndescription = \"run\"\n",
-    )
-    .unwrap();
+    let spec = Spec::parse("schema_version = 1\n[cli]\nname = \"x\"\nabout = 'say \"hi\" \\ é'\n")
+        .unwrap();
     let rust = spec.to_rust("1.2.3");
     assert!(rust.contains(r#"about: "say \"hi\" \\ é""#), "{rust}");
-    assert!(rust.contains(r#"path: "go""#), "{rust}");
-    assert!(rust.contains("Examples:"), "{rust}");
 }

@@ -7,21 +7,13 @@
 
 use crate::spec::{Interface, SPEC, split_flags};
 use clap::builder::TypedValueParser;
-use clap::{ArgAction, Args, CommandFactory, Parser, ValueEnum};
+use clap::{ArgAction, CommandFactory, Parser};
 
 #[derive(Debug, Parser)]
 // Like sort (getopt): a repeated option takes its last value, and an
 // option's value may start with '-' (`-S -r` gives -S the value "-r").
-#[command(
-    version,
-    propagate_version = true,
-    disable_help_subcommand = true,
-    args_override_self = true
-)]
+#[command(version, args_override_self = true)]
 pub struct Cli {
-    #[command(flatten)]
-    pub global: GlobalArgs,
-
     #[arg(value_name = "FILE")]
     pub files: Vec<std::path::PathBuf>,
 
@@ -159,90 +151,36 @@ fn separator(arg: std::ffi::OsString) -> Result<u8, String> {
     Ok(s.first().copied().unwrap_or(0))
 }
 
-#[derive(Debug, Args)]
-pub struct GlobalArgs {}
-
-/// Effective global options. A field whose flag was removed with its kit
-/// feature keeps its default.
-#[derive(Debug, Clone, Default)]
-pub struct Settings {
-    pub verbose: u8,
-    pub quiet: bool,
-    pub color: Option<ColorWhen>,
-}
-
-impl GlobalArgs {
-    #[allow(clippy::needless_update)] // the update supplies defaults for removed flags
-    pub fn settings(&self) -> Settings {
-        Settings {
-            ..Settings::default()
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ColorWhen {
-    Auto,
-    Always,
-    Never,
-}
-
 /// The clap command with all text from `cli.toml` applied.
 pub fn command() -> clap::Command {
     apply_spec(Cli::command(), &SPEC)
 }
 
-/// Apply about/help/examples and the help/version flags from `spec` to `cmd`
-/// and its subcommands.
+/// Apply the about text, help text, examples and the help and version flags
+/// from `spec` to `cmd`. sort uses -h and -V as modes, so the flags come from
+/// `cli.toml` (`--help` and `--version`) instead of clap's defaults.
 pub fn apply_spec(cmd: clap::Command, spec: &Interface) -> clap::Command {
     let mut cmd = cmd
         .name(spec.name)
         .bin_name(spec.name)
         .about(spec.about)
-        .after_long_help(spec.after_long_help);
+        .after_long_help(spec.after_long_help)
+        .disable_help_flag(true)
+        .disable_version_flag(true);
     if let Some(long) = spec.long_about {
         cmd = cmd.long_about(long);
     }
     for (id, help) in spec.help {
         cmd = set_help(cmd, id, help);
     }
-    let cmd = apply_subcommands(cmd, spec, "");
-    apply_help_and_version_flags(cmd, spec)
-}
-
-/// Replace clap's `-h/--help` and `-V/--version` when `cli.toml` declares others
-/// (e.g. `help_flags = ["--help"]` frees `-h` for the CLI's own use).
-fn apply_help_and_version_flags(mut cmd: clap::Command, spec: &Interface) -> clap::Command {
-    let custom_help = spec.help_flags != ["-h", "--help"];
-    let custom_version = spec.version_flags != ["-V", "--version"];
-    if custom_help {
-        cmd = disable_help_everywhere(cmd);
-        cmd = add_flag(cmd, "help", spec.help_flags, ArgAction::Help, "Print help");
-    }
-    if custom_version {
-        cmd = cmd.disable_version_flag(true);
-        cmd = add_flag(
-            cmd,
-            "version",
-            spec.version_flags,
-            ArgAction::Version,
-            "Print version",
-        );
-    }
-    cmd
-}
-
-fn disable_help_everywhere(cmd: clap::Command) -> clap::Command {
-    let names: Vec<String> = cmd
-        .get_subcommands()
-        .map(|s| s.get_name().to_string())
-        .collect();
-    let mut cmd = cmd.disable_help_flag(true);
-    for name in names {
-        cmd = cmd.mut_subcommand(name, disable_help_everywhere);
-    }
-    cmd
+    let cmd = add_flag(cmd, "help", spec.help_flags, ArgAction::Help, "Print help");
+    add_flag(
+        cmd,
+        "version",
+        spec.version_flags,
+        ArgAction::Version,
+        "Print version",
+    )
 }
 
 fn add_flag(
@@ -256,7 +194,7 @@ fn add_flag(
     if short.is_none() && long.is_none() {
         return cmd;
     }
-    let mut arg = clap::Arg::new(id).action(action).help(help).global(true);
+    let mut arg = clap::Arg::new(id).action(action).help(help);
     if let Some(s) = short {
         arg = arg.short(s);
     }
@@ -264,38 +202,6 @@ fn add_flag(
         arg = arg.long(l);
     }
     cmd.arg(arg)
-}
-
-fn apply_subcommands(mut cmd: clap::Command, spec: &Interface, prefix: &str) -> clap::Command {
-    let names: Vec<String> = cmd
-        .get_subcommands()
-        .map(|s| s.get_name().to_string())
-        .collect();
-    for name in names {
-        let path = if prefix.is_empty() {
-            name.clone()
-        } else {
-            format!("{prefix} {name}")
-        };
-        let Some(entry) = spec.command(&path) else {
-            // Missing entries are reported by the conformance test.
-            continue;
-        };
-        cmd = cmd.mut_subcommand(name.as_str(), |mut sub| {
-            sub = sub.about(entry.about);
-            if let Some(long) = entry.long_about {
-                sub = sub.long_about(long);
-            }
-            if let Some(examples) = entry.after_help {
-                sub = sub.after_help(examples);
-            }
-            for (id, help) in entry.help {
-                sub = set_help(sub, id, help);
-            }
-            apply_subcommands(sub, spec, &path)
-        });
-    }
-    cmd
 }
 
 /// Set an argument's help text. Arguments missing from the code are skipped
@@ -343,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn help_flags_reach_subcommands_and_version_can_be_removed() {
+    fn help_flags_come_from_the_spec_and_version_can_be_removed() {
         let spec = spec_with(&["-?", "--help"], &[]);
         let cmd = apply_spec(Cli::command(), &spec);
         cmd.clone().debug_assert();
@@ -355,15 +261,5 @@ mod tests {
             parse(&cmd, &["--version"]).unwrap_err().kind(),
             clap::error::ErrorKind::UnknownArgument
         );
-        let sub = cmd
-            .get_subcommands()
-            .next()
-            .map(|s| s.get_name().to_string());
-        if let Some(sub) = sub {
-            assert_eq!(
-                parse(&cmd, &[sub.as_str(), "-?"]).unwrap_err().kind(),
-                clap::error::ErrorKind::DisplayHelp
-            );
-        }
     }
 }

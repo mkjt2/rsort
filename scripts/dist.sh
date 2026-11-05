@@ -25,12 +25,7 @@ mkdir -p "$extras/completions" "$extras/man"
 "$host_bin" --generate complete-bash >"$extras/completions/$NAME.bash"
 "$host_bin" --generate complete-zsh >"$extras/completions/_$NAME"
 "$host_bin" --generate complete-fish >"$extras/completions/$NAME.fish"
-# A single-command CLI has `--generate man`. Don't probe `man --help` first:
-# a CLI that takes file operands reads `man` as a file and still exits 0.
-if ! "$host_bin" --generate man >"$extras/man/$NAME.1" 2>/dev/null; then
-  rm -f "$extras/man/$NAME.1"
-  "$host_bin" man --out-dir "$extras/man" # one page per subcommand
-fi
+"$host_bin" --generate man >"$extras/man/$NAME.1"
 
 built=()
 for target in "${targets[@]}"; do

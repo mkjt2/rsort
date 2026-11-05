@@ -22,7 +22,15 @@ pub fn run(out: &mut dyn Write, what: &str) -> Result<(), AppError> {
     match (what, shell) {
         ("man", _) => clap_mangen::Man::new(crate::cli::command()).render(out)?,
         ("schema", _) => writeln!(out, "{}", crate::spec::SCHEMA)?,
-        (_, Some(shell)) => super::completions::write(out, shell)?,
+        (_, Some(shell)) => {
+            // Rendered into memory first: clap_complete panics on write
+            // errors, and a closed pipe must not panic.
+            let mut cmd = crate::cli::command();
+            let name = cmd.get_name().to_string();
+            let mut script = Vec::new();
+            clap_complete::generate(shell, &mut cmd, name, &mut script);
+            out.write_all(&script)?;
+        }
         _ => {
             return Err(AppError::Usage(format!(
                 "cannot generate `{what}`; choose one of: {}",

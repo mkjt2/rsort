@@ -121,7 +121,7 @@ self_update = false # `self-update` from GitHub Releases, exit codes 5-6
 json = false        # global --json and JSON errors on stderr
 color = false       # --color (automatic color and NO_COLOR work without it)
 prompts = false     # confirmation prompts, --no-input, exit code 4
-verbosity = false   # -v/-q (logging and RUST_LOG work without it)
+verbosity = false   # -v/-q
 
 # Exit codes 0 (ok), 2 (usage) and 130 (interrupted) are built in; 1 is redefined.
 
@@ -166,10 +166,6 @@ description = "When set, every white-space character (not just space and tab) se
 [[env]]
 name = "GNUSORT_NUMERIC_COMPATIBILITY"
 description = "When set, a -t equal to the decimal point, thousands separator or minus sign still counts in numbers"
-
-[[env]]
-name = "RUST_LOG"
-description = "Override log filtering (e.g. debug, rsort=trace)"
 
 # ---------------------------------------------------------------------------
 # Root flags: sort's options.

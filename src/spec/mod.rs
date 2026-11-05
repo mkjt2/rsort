@@ -1,7 +1,7 @@
 //! The interface from `cli.toml`, as static data.
 //!
 //! `build.rs` reads `cli.toml` and generates [`SPEC`] (help text, help and
-//! version flags, error settings) and [`SCHEMA`], so the binary never parses
+//! version flags, the error exit code) and [`SCHEMA`], so the binary never parses
 //! TOML. The typed model of the file lives in `model.rs`, which only
 //! `build.rs` and the tests compile; `tests/conformance.rs` checks the clap
 //! definitions against it.
@@ -21,43 +21,10 @@ pub struct Interface {
     pub help_flags: &'static [&'static str],
     /// Flags that print the version; empty for none.
     pub version_flags: &'static [&'static str],
-    /// Help text of the root's flags and positional args, by clap id.
+    /// Help text of the flags and positional args, by clap id.
     pub help: &'static [(&'static str, &'static str)],
-    pub commands: &'static [CommandText],
-    pub error_style: ErrorStyle,
     /// Exit code for general errors.
     pub error_exit_code: i32,
-    /// Whether the `--json` kit feature is on.
-    pub json: bool,
-}
-
-/// Help text of one `[[command]]`.
-#[derive(Debug, Clone, Copy)]
-pub struct CommandText {
-    /// Space-separated path, e.g. `remote add`.
-    pub path: &'static str,
-    pub about: &'static str,
-    pub long_about: Option<&'static str>,
-    /// The `Examples:` section, if the command has examples.
-    pub after_help: Option<&'static str>,
-    /// Help text of its args and flags, by clap id.
-    pub help: &'static [(&'static str, &'static str)],
-}
-
-/// How errors are shown to humans.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ErrorStyle {
-    /// miette diagnostics: code, message and hint.
-    Rich,
-    /// `<name>: <message>`, plus a `hint:` line when there is one.
-    Plain,
-}
-
-impl Interface {
-    /// Look up a command by its space-separated path.
-    pub fn command(&self, path: &str) -> Option<&CommandText> {
-        self.commands.iter().find(|c| c.path == path)
-    }
 }
 
 /// Split declared flags like `["-h", "--help"]` into (short, long).

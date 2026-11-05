@@ -1,6 +1,4 @@
-//! One module per command. Each exposes `run(ctx, ...) -> Result<(), AppError>`.
+//! The root command (sorting) and `--generate`.
 
-pub mod completions;
 pub mod generate;
-pub mod man;
 pub mod root;

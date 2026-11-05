@@ -1,7 +1,6 @@
 //! The root command: read the inputs, then sort, merge or check them.
 
 use crate::cli::Cli;
-use crate::ctx::Ctx;
 use crate::error::AppError;
 use crate::sort::collate::Locale;
 use crate::sort::key::{KeyDef, Mode, Order};
@@ -9,6 +8,12 @@ use crate::sort::{Record, Sorter};
 use std::cmp::Ordering;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
+
+/// Where the command reads stdin and writes stdout.
+pub struct Ctx<'a> {
+    pub out: &'a mut dyn Write,
+    pub input: &'a mut dyn BufRead,
+}
 
 pub fn run(ctx: &mut Ctx, cli: &Cli, locale: Locale) -> Result<(), AppError> {
     let inputs = input_names(ctx, cli)?;

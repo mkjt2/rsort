@@ -1,3 +1,5 @@
+use std::io::IsTerminal;
+
 fn main() {
     let mut out = std::io::BufWriter::new(std::io::stdout().lock());
     let mut err = std::io::stderr().lock();
@@ -9,7 +11,7 @@ fn main() {
             out: &mut out,
             err: &mut err,
             input: &mut input,
-            term: rsort::ctx::Terminal::detect(),
+            stderr_tty: std::io::stderr().is_terminal(),
             env: &env,
         },
     );
