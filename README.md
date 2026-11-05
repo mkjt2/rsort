@@ -2,60 +2,60 @@
 
 [![CI](https://github.com/mkjt2/rsort/actions/workflows/ci.yml/badge.svg)](https://github.com/mkjt2/rsort/actions/workflows/ci.yml)
 
-A Rust port of the macOS `sort` (BSD sort 2.3-Apple): same flags, same
-output, same exit codes.
+A Rust port of the macOS `sort` (BSD sort 2.3-Apple), compatible with the
+original.
 
 ## Why
 
 Just for fun: to see what the Rust rage is all about. Take a classic Unix
-tool, match it byte for byte, and see how it compares.
+tool, write a compatible port, and see how it compares.
 
 ## Benchmarks
 
 Each scenario sorts 500,000 generated lines with `/usr/bin/sort` and with
 rsort, alternating between them: 1 warmup and 5 timed runs each, median wall
-time, peak resident memory, and a byte-for-byte check that the outputs match.
+time, peak resident memory, and a check that both sorted the same way.
 Apple M4 (10 cores, 16 GiB), macOS sort 2.3-Apple (201). Run it yourself with
 `just bench`.
 
-The faster or smaller of the two is in bold green.
+The faster or smaller of the two is in bold yellow.
 
 **Time** (lower ratio is better; rsort is faster in all 17 scenarios, 0.41×
 sort's time on average):
 
 | Scenario | Flags | Locale | sort | rsort | rsort/sort |
 | --- | --- | --- | ---: | ---: | ---: |
-| text | | C | 112 ms | $\color{green}{\textbf{55 ms}}$ | 0.49× |
-| text | | en_US.UTF-8 | 725 ms | $\color{green}{\textbf{250 ms}}$ | 0.35× |
-| reverse | `-r` | C | 115 ms | $\color{green}{\textbf{59 ms}}$ | 0.51× |
-| fold case | `-f` | C | 151 ms | $\color{green}{\textbf{67 ms}}$ | 0.44× |
-| fold case | `-f` | en_US.UTF-8 | 825 ms | $\color{green}{\textbf{401 ms}}$ | 0.49× |
-| dictionary | `-d` | C | 148 ms | $\color{green}{\textbf{79 ms}}$ | 0.53× |
-| unique | `-u` | C | 52 ms | $\color{green}{\textbf{37 ms}}$ | 0.70× |
-| numeric | `-n` | C | 309 ms | $\color{green}{\textbf{68 ms}}$ | 0.22× |
-| general numeric | `-g` | C | 206 ms | $\color{green}{\textbf{66 ms}}$ | 0.32× |
-| human numeric | `-h` | C | 254 ms | $\color{green}{\textbf{57 ms}}$ | 0.22× |
-| version | `-V` | C | 860 ms | $\color{green}{\textbf{362 ms}}$ | 0.42× |
-| month | `-M` | C | 410 ms | $\color{green}{\textbf{111 ms}}$ | 0.27× |
-| keys | `-t '\t' -k2,2 -k3,3n` | C | 260 ms | $\color{green}{\textbf{98 ms}}$ | 0.38× |
-| keys | `-t '\t' -k2,2 -k3,3n` | en_US.UTF-8 | 729 ms | $\color{green}{\textbf{320 ms}}$ | 0.44× |
-| check sorted | `-c` | C | 30 ms | $\color{green}{\textbf{18 ms}}$ | 0.60× |
-| merge | `-m` | C | 46 ms | $\color{green}{\textbf{31 ms}}$ | 0.68× |
-| random | `-R --random-source FILE` | C | 222 ms | $\color{green}{\textbf{65 ms}}$ | 0.29× |
+| text | | C | 112 ms | $\color{yellow}{\textbf{55 ms}}$ | 0.49× |
+| text | | en_US.UTF-8 | 725 ms | $\color{yellow}{\textbf{250 ms}}$ | 0.35× |
+| reverse | `-r` | C | 115 ms | $\color{yellow}{\textbf{59 ms}}$ | 0.51× |
+| fold case | `-f` | C | 151 ms | $\color{yellow}{\textbf{67 ms}}$ | 0.44× |
+| fold case | `-f` | en_US.UTF-8 | 825 ms | $\color{yellow}{\textbf{401 ms}}$ | 0.49× |
+| dictionary | `-d` | C | 148 ms | $\color{yellow}{\textbf{79 ms}}$ | 0.53× |
+| unique | `-u` | C | 52 ms | $\color{yellow}{\textbf{37 ms}}$ | 0.70× |
+| numeric | `-n` | C | 309 ms | $\color{yellow}{\textbf{68 ms}}$ | 0.22× |
+| general numeric | `-g` | C | 206 ms | $\color{yellow}{\textbf{66 ms}}$ | 0.32× |
+| human numeric | `-h` | C | 254 ms | $\color{yellow}{\textbf{57 ms}}$ | 0.22× |
+| version | `-V` | C | 860 ms | $\color{yellow}{\textbf{362 ms}}$ | 0.42× |
+| month | `-M` | C | 410 ms | $\color{yellow}{\textbf{111 ms}}$ | 0.27× |
+| keys | `-t '\t' -k2,2 -k3,3n` | C | 260 ms | $\color{yellow}{\textbf{98 ms}}$ | 0.38× |
+| keys | `-t '\t' -k2,2 -k3,3n` | en_US.UTF-8 | 729 ms | $\color{yellow}{\textbf{320 ms}}$ | 0.44× |
+| check sorted | `-c` | C | 30 ms | $\color{yellow}{\textbf{18 ms}}$ | 0.60× |
+| merge | `-m` | C | 46 ms | $\color{yellow}{\textbf{31 ms}}$ | 0.68× |
+| random | `-R --random-source FILE` | C | 222 ms | $\color{yellow}{\textbf{65 ms}}$ | 0.29× |
 
 **Peak memory**:
 
 | Scenario | Flags | Locale | sort | rsort |
 | --- | --- | --- | ---: | ---: |
-| text | | C | 40 MiB | $\color{green}{\textbf{30 MiB}}$ |
-| text | | en_US.UTF-8 | 60 MiB | $\color{green}{\textbf{40 MiB}}$ |
-| fold case | `-f` | en_US.UTF-8 | 101 MiB | $\color{green}{\textbf{40 MiB}}$ |
-| numeric | `-n` | C | 44 MiB | $\color{green}{\textbf{25 MiB}}$ |
-| month | `-M` | C | 65 MiB | $\color{green}{\textbf{28 MiB}}$ |
-| keys | `-t '\t' -k2,2 -k3,3n` | C | 90 MiB | $\color{green}{\textbf{42 MiB}}$ |
-| keys | `-t '\t' -k2,2 -k3,3n` | en_US.UTF-8 | 146 MiB | $\color{green}{\textbf{52 MiB}}$ |
-| check sorted | `-c` | C | $\color{green}{\textbf{1 MiB}}$ | 2 MiB |
-| merge | `-m` | C | $\color{green}{\textbf{1 MiB}}$ | 2 MiB |
+| text | | C | 40 MiB | $\color{yellow}{\textbf{30 MiB}}$ |
+| text | | en_US.UTF-8 | 60 MiB | $\color{yellow}{\textbf{40 MiB}}$ |
+| fold case | `-f` | en_US.UTF-8 | 101 MiB | $\color{yellow}{\textbf{40 MiB}}$ |
+| numeric | `-n` | C | 44 MiB | $\color{yellow}{\textbf{25 MiB}}$ |
+| month | `-M` | C | 65 MiB | $\color{yellow}{\textbf{28 MiB}}$ |
+| keys | `-t '\t' -k2,2 -k3,3n` | C | 90 MiB | $\color{yellow}{\textbf{42 MiB}}$ |
+| keys | `-t '\t' -k2,2 -k3,3n` | en_US.UTF-8 | 146 MiB | $\color{yellow}{\textbf{52 MiB}}$ |
+| check sorted | `-c` | C | $\color{yellow}{\textbf{1 MiB}}$ | 2 MiB |
+| merge | `-m` | C | $\color{yellow}{\textbf{1 MiB}}$ | 2 MiB |
 
 ## Validation
 
