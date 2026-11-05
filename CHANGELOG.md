@@ -6,6 +6,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-04
+
 ### Added
 - rsort, a Rust clone of the macOS `sort` (BSD sort 2.3-Apple) with the same
   flags, output and exit codes.
